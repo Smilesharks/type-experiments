@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Origami Type</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Alfa+Slab+One&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@900&family=Rubik+Mono+One&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#f1ebdd; --ink:#1b1b1b; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family:"DM Mono", ui-monospace, Menlo, monospace; font-size:12px; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+  #field { position:fixed; left:0; top:0; width:1px; height:1px; opacity:0; border:0; padding:0;
+    font-size:16px; /* 16px avoids the iOS zoom on focus */ pointer-events:none; }
+  .bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:10px; pointer-events:none; }
+  .bar > * { pointer-events:auto; }
+  .hint { opacity:.55; letter-spacing:.02em; }
+  .controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+  .swatches { display:flex; gap:6px; }
+  .sw { width:22px; height:22px; border-radius:50%; border:1px solid color-mix(in srgb, var(--ink) 40%, transparent);
+    padding:0; cursor:pointer; }
+  .sw[aria-pressed="true"] { outline:2px solid var(--ink); outline-offset:2px; }
+  button, select { font:inherit; color:var(--ink); background:transparent; cursor:pointer;
+    border:1px solid color-mix(in srgb, var(--ink) 40%, transparent); border-radius:999px; padding:5px 12px; }
+  select option { color:#111; background:#fff; }
+  button:hover, select:hover { border-color:var(--ink); }
+  button:focus-visible, select:focus-visible, input[type=range]:focus-visible, .sw:focus-visible {
+    outline:2px solid var(--ink); outline-offset:2px; }
+  label { display:inline-flex; align-items:center; gap:6px; opacity:.9; }
+  input[type=range] { accent-color:var(--ink); width:90px; }
+  @media (max-width:640px) { .hint { font-size:11px; } .controls { gap:6px 8px; } }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Origami type canvas"></canvas>
+<input id="field" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" aria-label="Type here">
+
+<div class="bar" id="bar">
+  <div class="hint" id="hint"></div>
+  <div class="controls">
+    <div class="swatches" id="swatches" role="group" aria-label="Palette"></div>
+    <label>Font <select id="font"></select></label>
+    <button id="styleBtn" type="button">Style: paper</button>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">off</option>
+        <option value="mirrorH">mirror horizontal</option>
+        <option value="mirrorV">mirror vertical</option>
+        <option value="kal4">kaleidoscope 4</option>
+        <option value="kal6">kaleidoscope 6</option>
+      </select>
+    </label>
+    <label>Pointer
+      <select id="ptrMode">
+        <option value="fold">fold</option>
+        <option value="off">off</option>
+      </select>
+    </label>
+    <label>Speed <input id="speed" type="range" min="0.4" max="2" step="0.01" value="1"></label>
+    <button id="png" type="button">PNG</button>
+    <button id="svg" type="button">SVG</button>
+    <button id="clear" type="button">Clear</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* =========================================================
+   1. CONFIG
+   ========================================================= */
+const hex = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const PALETTES = [
+  { name:'Folio',  bg:'#f1ebdd', ink:'#1b1b1b', colors:['#e8472b','#f6b21b','#2a49d6','#1f9d78','#e86fa7'] },
+  { name:'Night',  bg:'#0b0d17', ink:'#f2f2f2', colors:['#ff5d73','#ffb86b','#7bdff2','#b28dff','#5bf5b5'] },
+  { name:'Candy',  bg:'#fde8ef', ink:'#2a1220', colors:['#ff4d8d','#ff9f1c','#5a67d8','#2ec4b6','#9b5de5'] },
+  { name:'Forest', bg:'#0e2a20', ink:'#f3ecd2', colors:['#f4d35e','#ee964b','#7fb069','#e6aa68','#f95738'] },
+  { name:'Ocean',  bg:'#06202b', ink:'#e6f7ff', colors:['#00b4d8','#90e0ef','#48cae4','#f72585','#ffd166'] },
+  { name:'Sunset', bg:'#2b0f2e', ink:'#ffe9d6', colors:['#ff6b35','#f7c59f','#ffcb77','#ef476f','#7b2cbf'] },
+  { name:'Kraft',  bg:'#cdb799', ink:'#2b2118', colors:['#3b2f2f','#a4492f','#e9d8b4','#2f5d62','#d98e04'] },
+  { name:'Mono',   bg:'#000000', ink:'#ffffff', colors:['#ffffff','#d0d0d0','#9a9a9a'] },
+].map(p => ({ ...p, rgb: p.colors.map(hex), inkRgb: hex(p.ink) }));
+const PAPER_BACK = [247, 243, 234]; // color of the back of the paper while it flips
+
+const FONTS = [
+  { label:'Slab',        family:'Alfa Slab One',    weight:400 },
+  { label:'Fat face',    family:'Abril Fatface',    weight:400 },
+  { label:'Mono block',  family:'Rubik Mono One',   weight:400 },
+  { label:'Bold serif',  family:'Playfair Display', weight:900 },
+];
+const MAX_LETTERS = 40;
+const MIN_FS = 22;
+const LINE_H = 1.35;
+const CELL = 0.06;        // triangle size in em
+const STAGGER = 0.022;    // seconds between neighbouring triangles unfolding
+const FOLD_T = 0.5;       // seconds one triangle takes to open
+const POINTER_R = 170;
+
+/* =========================================================
+   2. MATH HELPERS
+   ========================================================= */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const easeOutBack = t => { const c1 = 1.1, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+function hash(str) { // FNV-1a
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function rng(seed) { // mulberry32
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* =========================================================
+   3. STATE
+   ========================================================= */
+const $ = id => document.getElementById(id);
+const canvas = $('c'), ctx = canvas.getContext('2d');
+const off = document.createElement('canvas'), octx = off.getContext('2d'); // used for symmetry copies
+const field = $('field'), bar = $('bar');
+let W = 0, H = 0, DPR = 1, uiH = 0;
+const state = { pal: PALETTES[0], palVer: 0, fontIdx: 0, style: 'paper', sym: 'off', pointer: 'fold', speed: 1 };
+let letters = [], dying = [], text = '';
+let fsT = 120, fsC = 120, nextId = 1;
+const ptr = { x: -9999, y: -9999, active: false };
+const curFont = () => FONTS[state.fontIdx];
+const fontStr = size => `${curFont().weight} ${size}px "${curFont().family}", Georgia, serif`;
+const coarse = matchMedia('(pointer:coarse)').matches;
+
+/* =========================================================
+   4. METRICS AND LAYOUT
+   ========================================================= */
+let metricCache = new Map();
+function metrics(ch) {
+  const key = curFont().family + ch;
+  let m = metricCache.get(key);
+  if (!m) {
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.font = fontStr(200); ctx.textAlign = 'left';
+    const t = ctx.measureText(ch);
+    ctx.restore();
+    m = { w: t.width / 200, l: t.actualBoundingBoxLeft / 200, r: t.actualBoundingBoxRight / 200,
+          asc: t.actualBoundingBoxAscent / 200, desc: t.actualBoundingBoxDescent / 200 };
+    metricCache.set(key, m);
+  }
+  return m;
+}
+function layoutBox() {
+  const Hh = H - uiH, cy0 = Hh / 2, m = Math.min(W, Hh);
+  switch (state.sym) {
+    case 'mirrorH': return { cx: W * 0.26, cy: cy0, w: W * 0.4, h: Hh * 0.6 };
+    case 'mirrorV': return { cx: W / 2, cy: cy0 - Hh * 0.2, w: W * 0.72, h: Hh * 0.3 };
+    case 'kal4': case 'kal6': return { cx: W / 2, cy: cy0 - m * 0.27, w: m * 0.5, h: m * 0.26 };
+    default: return { cx: W / 2, cy: cy0, w: W * 0.78, h: Hh * 0.6 };
+  }
+}
+function breakLines(fs, boxW) {
+  const lines = [{ items: [], w: 0 }];
+  let i = 0;
+  while (i < letters.length) {
+    const L = letters[i];
+    let cur = lines[lines.length - 1];
+    if (L.ch === ' ') { cur.items.push(L); cur.w += metrics(' ').w * fs; i++; continue; }
+    let j = i, ww = 0;
+    while (j < letters.length && letters[j].ch !== ' ') { ww += metrics(letters[j].ch).w * fs; j++; }
+    if (cur.items.some(l => l.ch !== ' ') && cur.w + ww > boxW) { cur = { items: [], w: 0 }; lines.push(cur); }
+    for (let k = i; k < j; k++) cur.items.push(letters[k]);
+    cur.w += ww; i = j;
+  }
+  for (const ln of lines) { // width without trailing spaces, used for centering
+    let w = ln.w, k = ln.items.length - 1;
+    while (k >= 0 && ln.items[k].ch === ' ') { w -= metrics(' ').w * fs; k--; }
+    ln.cw = Math.max(0, w);
+  }
+  return lines;
+}
+function fits(fs, box) {
+  const lines = breakLines(fs, box.w);
+  return Math.max(...lines.map(l => l.cw)) <= box.w && lines.length * LINE_H * fs <= box.h;
+}
+function relayout() {
+  if (!letters.length) return;
+  const box = layoutBox();
+  const maxFs = Math.min((H - uiH) * 0.3, W * 0.22);
+  let lo = MIN_FS, hi = Math.max(MIN_FS, maxFs);
+  if (fits(hi, box)) lo = hi;
+  else for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (fits(mid, box)) lo = mid; else hi = mid; }
+  fsT = lo;
+  const lines = breakLines(lo, box.w), lh = LINE_H * lo, top = box.cy - lines.length * lh / 2;
+  lines.forEach((ln, li) => {
+    let x = box.cx - ln.cw / 2;
+    const base = top + (li + 0.5) * lh + 0.3 * lo;
+    for (const L of ln.items) {
+      const adv = metrics(L.ch).w * lo;
+      L.tx = x + adv / 2; L.ty = base; x += adv;
+    }
+  });
+}
+
+/* =========================================================
+   5. GEOMETRY: glyph -> triangle mesh, ribbon -> triangle strip
+   Each triangle knows its neighbours and the shared edge, which
+   becomes the hinge when the paper unfolds.
+   ========================================================= */
+function finishGeometry(verts, tris) {
+  const out = tris.map(t => {
+    const p = [];
+    for (const id of t) p.push(verts[id][0], verts[id][1]);
+    return { ids: t, p, cx: (p[0] + p[2] + p[4]) / 3, cy: (p[1] + p[3] + p[5]) / 3, adj: [] };
+  });
+  const edges = new Map();
+  out.forEach((t, i) => {
+    for (let e = 0; e < 3; e++) {
+      const a = t.ids[e], b = t.ids[(e + 1) % 3], key = a < b ? a * 100003 + b : b * 100003 + a;
+      const arr = edges.get(key);
+      if (arr) arr.push(i); else edges.set(key, [i]);
+    }
+  });
+  edges.forEach((arr, key) => {
+    if (arr.length !== 2) return;
+    const b = key % 100003, a = (key - b) / 100003, A = verts[a], B = verts[b];
+    out[arr[0]].adj.push([arr[1], A[0], A[1], B[0], B[1]]);
+    out[arr[1]].adj.push([arr[0], A[0], A[1], B[0], B[1]]);
+  });
+  return { tris: out };
+}
+
+let geoCache = new Map();
+const maskCv = document.createElement('canvas'); maskCv.width = maskCv.height = 500;
+const maskCtx = maskCv.getContext('2d', { willReadFrequently: true });
+function glyphGeometry(ch) {
+  const key = curFont().family + '|' + ch;
+  let g = geoCache.get(key);
+  if (g) return g;
+  const m = metrics(ch), r = rng(hash(key));
+  const x0 = -m.l - m.w / 2 - CELL, x1 = m.r - m.w / 2 + CELL, y0 = -m.asc - CELL, y1 = Math.max(m.desc, 0) + CELL;
+  if (!(m.w > 0.01) || ch === ' ' || x1 <= x0) { g = { tris: [] }; geoCache.set(key, g); return g; }
+  // rasterize the glyph and sample it, so the mesh follows the real letter shape
+  maskCtx.clearRect(0, 0, 500, 500);
+  maskCtx.font = fontStr(200); maskCtx.textAlign = 'center'; maskCtx.fillStyle = '#000';
+  maskCtx.fillText(ch, 250, 350);
+  const data = maskCtx.getImageData(0, 0, 500, 500).data;
+  const inside = (x, y) => {
+    const ix = Math.round(250 + x * 200), iy = Math.round(350 + y * 200);
+    return ix < 0 || iy < 0 || ix >= 500 || iy >= 500 ? 0 : (data[(iy * 500 + ix) * 4 + 3] > 127 ? 1 : 0);
+  };
+  const nx = Math.max(1, Math.ceil((x1 - x0) / CELL)), ny = Math.max(1, Math.ceil((y1 - y0) / CELL)), verts = [];
+  for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++) {
+    const interior = i > 0 && i < nx && j > 0 && j < ny, jit = interior ? CELL * 0.42 : 0;
+    verts.push([x0 + (x1 - x0) * i / nx + (r() - 0.5) * jit, y0 + (y1 - y0) * j / ny + (r() - 0.5) * jit]);
+  }
+  const cand = [];
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const a = j * (nx + 1) + i, b = a + 1, c = a + nx + 1, d = c + 1;
+    if (r() < 0.5) cand.push([a, b, c], [b, d, c]); else cand.push([a, b, d], [a, d, c]);
+  }
+  const cover = t => { // how many of 4 sample points fall inside the glyph
+    const P = t.map(id => verts[id]), cx = (P[0][0] + P[1][0] + P[2][0]) / 3, cy = (P[0][1] + P[1][1] + P[2][1]) / 3;
+    let n = inside(cx, cy);
+    for (const q of P) n += inside(cx + (q[0] - cx) * 0.6, cy + (q[1] - cy) * 0.6);
+    return n;
+  };
+  const cov = cand.map(cover);
+  let chosen = cand.filter((_, i) => cov[i] >= 2);
+  if (chosen.length < 6) chosen = cand.filter((_, i) => cov[i] >= 1); // thin glyphs such as punctuation
+  g = finishGeometry(verts, chosen);
+  geoCache.set(key, g);
+  return g;
+}
+// A zigzag paper strip, drawn under a finished word
+function ribbonGeometry(Wem) {
+  const h = 0.1, step = 0.1, cols = Math.max(2, Math.round(Wem / step)), s = Wem / cols, verts = [], tris = [];
+  for (let i = 0; i <= cols; i++) verts.push([-Wem + i * s, 0]);                 // top row: ids 0..cols
+  for (let i = 0; i < cols; i++) verts.push([-Wem + (i + 0.5) * s, h]);          // bottom row: ids cols+1 ..
+  const bot = i => cols + 1 + i;
+  for (let i = 0; i < cols; i++) {
+    tris.push([i, i + 1, bot(i)]);
+    if (i + 1 < cols) tris.push([bot(i), i + 1, bot(i + 1)]);
+  }
+  return finishGeometry(verts, tris);
+}
+
+/* =========================================================
+   6. PIECES: one mesh instance with its own unfold order.
+   Breadth-first search from a root triangle gives each triangle a
+   parent and a hinge, so the paper opens like a wave.
+   ========================================================= */
+function makePiece(geo, ox, oy, r, rootMode) {
+  const T = geo.tris, n = T.length;
+  const P = { n, ox, oy, order: new Int32Array(n), parent: new Int32Array(n).fill(-1), hinge: new Float32Array(n * 4),
+    depth: new Int16Array(n), u: new Float32Array(n), jt: new Float32Array(n), M: new Float32Array(n * 6),
+    rgb: null, palVer: -1, maxDepth: 0, T };
+  if (!n) return P;
+  const seen = new Uint8Array(n); let oc = 0;
+  const bfs = (root, d0) => {
+    const q = [root]; seen[root] = 1; P.depth[root] = d0;
+    for (let qi = 0; qi < q.length; qi++) {
+      const i = q[qi]; P.order[oc++] = i;
+      for (const [j, ax, ay, bx, by] of T[i].adj) {
+        if (seen[j]) continue;
+        seen[j] = 1; P.parent[j] = i; P.depth[j] = P.depth[i] + 1;
+        P.hinge[j * 4] = ax; P.hinge[j * 4 + 1] = ay; P.hinge[j * 4 + 2] = bx; P.hinge[j * 4 + 3] = by;
+        q.push(j);
+      }
+    }
+  };
+  let root = Math.floor(r() * n);
+  if (rootMode === 'left') { root = 0; for (let i = 1; i < n; i++) if (T[i].cx < T[root].cx) root = i; }
+  bfs(root, 0);
+  while (oc < n) { let i = 0; while (seen[i]) i++; bfs(i, 3); } // detached parts (i dots, accents) unfold later
+  for (let k = 0; k < n; k++) P.maxDepth = Math.max(P.maxDepth, P.depth[k]);
+  const u0 = r() * 8;
+  for (let k = 0; k < n; k++) {
+    P.u[k] = u0 + (T[k].cx * 1.1 + T[k].cy * 0.9) * 1.4 + (r() - 0.5) * 0.5; // position along the palette gradient
+    P.jt[k] = (r() - 0.5) * 0.22 - 0.01;                                    // fixed per-facet brightness
+  }
+  return P;
+}
+function recolor(P) {
+  const pal = state.pal, cols = pal.rgb, nC = cols.length;
+  P.rgb = new Float32Array(P.n * 3);
+  for (let k = 0; k < P.n; k++) {
+    let c;
+    if (state.style === 'mono') c = pal.inkRgb;
+    else {
+      const t = ((P.u[k] % nC) + nC) % nC, i = Math.floor(t), f = smoothstep(0, 1, t - i), a = cols[i], b = cols[(i + 1) % nC];
+      c = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+    }
+    P.rgb[k * 3] = c[0]; P.rgb[k * 3 + 1] = c[1]; P.rgb[k * 3 + 2] = c[2];
+  }
+  P.palVer = state.palVer;
+}
+
+/* =========================================================
+   7. LETTERS: creation, removal, spring physics
+   ========================================================= */
+function buildPieces(L, word, prefix) {
+  L.pieces = [];
+  const r = rng(hash(prefix) ^ 0x51ed270b);
+  if (L.ch === ' ') {
+    const prev = word.length ? word[word.length - 1] : null;
+    if (prev && prev.ch !== ' ') {
+      const Wem = word.reduce((s, l) => s + metrics(l.ch).w, 0);
+      L.pieces.push(makePiece(ribbonGeometry(Wem), -metrics(' ').w / 2, 0.3, r, 'left'));
+    }
+  } else {
+    L.pieces.push(makePiece(glyphGeometry(L.ch), 0, 0, r, 'random'));
+  }
+}
+function addLetter(ch, now) {
+  if (letters.length >= MAX_LETTERS) return;
+  let ws = letters.length;
+  while (ws > 0 && letters[ws - 1].ch !== ' ') ws--;
+  const word = letters.slice(ws);
+  const L = { id: nextId++, ch, x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, scale: 0.8, sv: 0,
+    rot: (Math.random() - 0.5) * 0.3, rv: 0, pieces: [], born: now, dead: 0 };
+  letters.push(L);
+  buildPieces(L, word, word.map(l => l.ch).join('') + ch);
+  relayout();
+  L.x = L.tx; L.y = L.ty;
+  for (let k = 1; k <= 3; k++) { // little kick so the line wobbles when a letter lands
+    const N = letters[letters.length - 1 - k]; if (!N) break;
+    N.vy -= (160 / k) * (fsT / 200); N.rv += (Math.random() - 0.5) * 1.2 / k;
+  }
+}
+function removeLast(now) {
+  const L = letters.pop(); if (!L) return;
+  L.dead = now; dying.push(L); relayout();
+}
+function clearAll(now) {
+  while (letters.length) { const L = letters.pop(); L.dead = now; dying.push(L); }
+  text = ''; field.value = '';
+}
+function rebuildAll() { // after a font change or when the web font finishes loading
+  geoCache = new Map(); dying = [];
+  let ws = 0;
+  letters.forEach((L, i) => {
+    if (i > 0 && letters[i - 1].ch === ' ') ws = i;
+    const word = letters.slice(ws, i);
+    buildPieces(L, word, word.map(l => l.ch).join('') + L.ch);
+  });
+  relayout();
+}
+function stepLetter(L, h, now) {
+  const dead = !!L.dead, k = 170, d = 2 * Math.sqrt(k) * 0.45;
+  L.vx += ((L.tx - L.x) * k - L.vx * d) * h; L.x += L.vx * h;
+  L.vy += ((L.ty - L.y) * k - L.vy * d) * h; L.y += L.vy * h;
+  const ks = 200, ds = 2 * Math.sqrt(ks) * 0.5;
+  L.sv += (((dead ? 0.9 : 1) - L.scale) * ks - L.sv * ds) * h; L.scale += L.sv * h;
+  const kr = 120, dr = 2 * Math.sqrt(kr) * 0.4;
+  L.rv += (((dead ? 0 : 0.01 * Math.sin(now * 0.8 + L.id)) - L.rot) * kr - L.rv * dr) * h; L.rot += L.rv * h;
+}
+
+/* =========================================================
+   8. SYMMETRY COPIES
+   ========================================================= */
+function copies() {
+  const cy0 = (H - uiH) / 2, cx0 = W / 2;
+  switch (state.sym) {
+    case 'mirrorH': return [[1, 0, 0, 1, 0, 0], [-1, 0, 0, 1, W, 0]];
+    case 'mirrorV': return [[1, 0, 0, 1, 0, 0], [1, 0, 0, -1, 0, 2 * cy0]];
+    case 'kal4': case 'kal6': {
+      const N = state.sym === 'kal4' ? 4 : 6, out = [];
+      for (let k = 0; k < N; k++) {
+        const a = 2 * Math.PI * k / N, c = Math.cos(a), s = Math.sin(a);
+        out.push([c, s, -s, c, cx0 - c * cx0 + s * cy0, cy0 - s * cx0 - c * cy0]);
+      }
+      return out;
+    }
+    default: return [[1, 0, 0, 1, 0, 0]];
+  }
+}
+function invert(M, x, y) {
+  const [a, b, c, d, e, f] = M, det = a * d - b * c;
+  return { x: (d * (x - e) - c * (y - f)) / det, y: (-b * (x - e) + a * (y - f)) / det };
+}
+
+/* =========================================================
+   9. FOLD ENGINE: projected triangles for this frame
+   A triangle folded by angle phi around its hinge is the flat
+   triangle squeezed by cos(phi) across the hinge line. Each
+   triangle's matrix is its parent's matrix times its own fold.
+   ========================================================= */
+const scene = { n: 0, xy: new Float32Array(6 * 4096), fill: [] };
+function sceneAdd(x0, y0, x1, y1, x2, y2, fill) {
+  if ((scene.n + 1) * 6 > scene.xy.length) { const b = new Float32Array(scene.xy.length * 2); b.set(scene.xy); scene.xy = b; }
+  const o = scene.n * 6, a = scene.xy;
+  a[o] = x0; a[o + 1] = y0; a[o + 2] = x1; a[o + 3] = y1; a[o + 4] = x2; a[o + 5] = y2;
+  scene.fill[scene.n++] = fill;
+}
+const rgbStr = (r, g, b) => `rgb(${r < 0 ? 0 : r > 255 ? 255 : r | 0},${g < 0 ? 0 : g > 255 ? 255 : g | 0},${b < 0 ? 0 : b > 255 ? 255 : b | 0})`;
+
+// fold progress of triangle k: 0 = folded flat, 1 = open. Dying letters refold in reverse order.
+function foldProgress(P, k, L, now, speed) {
+  if (L.dead) {
+    const tt = ((now - L.dead) * speed - (P.maxDepth - P.depth[k]) * 0.012) / 0.3;
+    return 1 - clamp(tt, 0, 1);
+  }
+  const tt = ((now - L.born) * speed - P.depth[k] * STAGGER) / FOLD_T;
+  return tt <= 0 ? 0 : easeOutBack(Math.min(tt, 1));
+}
+
+function buildPiece(P, L, now, ptrs, speed) {
+  if (!P.n) return;
+  if (P.palVer !== state.palVer) recolor(P);
+  const sc = fsC * Math.max(L.scale, 0), cr = Math.cos(L.rot), sr = Math.sin(L.rot), M = P.M, T = P.T;
+  const hover = ptrs.length && state.pointer === 'fold';
+  for (let oi = 0; oi < P.n; oi++) {
+    const k = P.order[oi], tri = T[k], par = P.parent[k];
+    // Geometry uses the real fold progress only. Folds compound down the chain of hinges,
+    // so any wobble applied here would pile up and deform the whole letter.
+    const f = foldProgress(P, k, L, now, speed);
+    const c = Math.cos((1 - f) * Math.PI), m6 = k * 6;
+    // slow breathing ripple, applied to shading only
+    const cs = c > 0 ? Math.cos((1 - f * (1 - 0.12 * (0.5 + 0.5 * Math.sin(now * 1.3 + P.depth[k] * 0.35 + L.id)))) * Math.PI) : c;
+    let fall = 0;
+    if (hover) { // loose facets near the pointer curl up and shrink
+      const wx = (tri.cx + P.ox) * sc, wy = (tri.cy + P.oy) * sc;
+      const sx = L.x + wx * cr - wy * sr, sy = L.y + wx * sr + wy * cr;
+      for (const q of ptrs) fall = Math.max(fall, 1 - smoothstep(0, POINTER_R, Math.hypot(sx - q.x, sy - q.y)));
+    }
+    let a, b, cc, d, e, g;
+    if (par < 0) { // root triangle has no hinge: it grows from its centre
+      const s = clamp(f, 0, 1.15);
+      a = s; b = 0; cc = 0; d = s; e = tri.cx * (1 - s); g = tri.cy * (1 - s);
+    } else {
+      const h = k * 4, ax = P.hinge[h], ay = P.hinge[h + 1], bx = P.hinge[h + 2], by = P.hinge[h + 3];
+      let ux = bx - ax, uy = by - ay; const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+      const nx = -uy, ny = ux, q = 1 - c, nA = nx * ax + ny * ay;
+      const Fa = 1 - q * nx * nx, Fb = -q * nx * ny, Fc = Fb, Fd = 1 - q * ny * ny, Fe = q * nx * nA, Ff = q * ny * nA;
+      const p6 = par * 6, Pa = M[p6], Pb = M[p6 + 1], Pc = M[p6 + 2], Pd = M[p6 + 3], Pe = M[p6 + 4], Pf = M[p6 + 5];
+      a = Pa * Fa + Pc * Fb; b = Pb * Fa + Pd * Fb; cc = Pa * Fc + Pc * Fd; d = Pb * Fc + Pd * Fd;
+      e = Pa * Fe + Pc * Ff + Pe; g = Pb * Fe + Pd * Ff + Pf;
+    }
+    M[m6] = a; M[m6 + 1] = b; M[m6 + 2] = cc; M[m6 + 3] = d; M[m6 + 4] = e; M[m6 + 5] = g;
+    if (f < 0.004) continue;
+    // shade: front side gets darker as it tilts away, back side shows pale paper
+    const j = P.jt[k], r0 = P.rgb[k * 3], g0 = P.rgb[k * 3 + 1], b0 = P.rgb[k * 3 + 2];
+    let fill;
+    if (c >= 0) { const s = 0.5 + 0.42 * cs + j + 0.25 * fall; fill = rgbStr(r0 * s, g0 * s, b0 * s); }
+    else {
+      const s = 0.55 + 0.35 * -c + j, mix = 0.6;
+      fill = rgbStr((r0 * (1 - mix) + PAPER_BACK[0] * mix) * s, (g0 * (1 - mix) + PAPER_BACK[1] * mix) * s, (b0 * (1 - mix) + PAPER_BACK[2] * mix) * s);
+    }
+    const p = tri.p, o = scene.n;
+    const px = [0, 0, 0], py = [0, 0, 0];
+    for (let v = 0; v < 3; v++) {
+      const lx = p[v * 2], ly = p[v * 2 + 1];
+      const mx = (a * lx + cc * ly + e + P.ox) * sc, my = (b * lx + d * ly + g + P.oy) * sc;
+      px[v] = L.x + mx * cr - my * sr; py[v] = L.y + mx * sr + my * cr;
+    }
+    if (fall > 0.01) { // shrink and twist around the facet centre (only this facet, children are not affected)
+      const gx = (px[0] + px[1] + px[2]) / 3, gy = (py[0] + py[1] + py[2]) / 3;
+      const s = 1 - 0.85 * fall, ca = Math.cos(fall * 1.4), sa = Math.sin(fall * 1.4);
+      for (let v = 0; v < 3; v++) {
+        const dx = (px[v] - gx) * s, dy = (py[v] - gy) * s;
+        px[v] = gx + dx * ca - dy * sa; py[v] = gy + dx * sa + dy * ca;
+      }
+    }
+    sceneAdd(px[0], py[0], px[1], py[1], px[2], py[2], fill);
+  }
+}
+function buildScene(now) {
+  scene.n = 0;
+  const ms = copies();
+  const ptrs = ptr.active ? ms.map(M => invert(M, ptr.x, ptr.y)) : [];
+  const speed = state.speed;
+  for (const L of dying) for (const P of L.pieces) buildPiece(P, L, now, ptrs, speed);
+  for (const L of letters) for (const P of L.pieces) buildPiece(P, L, now, ptrs, speed);
+  return ms;
+}
+
+/* =========================================================
+   10. UPDATE AND DRAW
+   ========================================================= */
+let last = 0;
+function update(now, dt) {
+  fsC += (fsT - fsC) * (1 - Math.exp(-10 * dt));
+  const steps = clamp(Math.ceil(dt * 90), 1, 4), h = dt / steps;
+  for (let s = 0; s < steps; s++) { for (const L of letters) stepLetter(L, h, now); for (const L of dying) stepLetter(L, h, now); }
+  dying = dying.filter(L => {
+    const maxD = Math.max(0, ...L.pieces.map(P => P.maxDepth));
+    return (now - L.dead) * state.speed < maxD * 0.012 + 0.45;
+  });
+}
+function paintScene(c) {
+  c.lineWidth = 0.9; c.lineJoin = 'round';
+  const a = scene.xy;
+  for (let i = 0; i < scene.n; i++) {
+    const o = i * 6, f = scene.fill[i];
+    c.fillStyle = f; c.strokeStyle = f; // same-color stroke hides hairline seams between facets
+    c.beginPath(); c.moveTo(a[o], a[o + 1]); c.lineTo(a[o + 2], a[o + 3]); c.lineTo(a[o + 4], a[o + 5]); c.closePath();
+    c.fill(); c.stroke();
+  }
+}
+function draw(now) {
+  const ms = buildScene(now);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = state.pal.bg; ctx.fillRect(0, 0, W, H);
+  if (ms.length === 1) paintScene(ctx);
+  else { // paint once to an offscreen canvas, then stamp it for every symmetry copy
+    octx.setTransform(1, 0, 0, 1, 0, 0); octx.clearRect(0, 0, off.width, off.height);
+    octx.setTransform(DPR, 0, 0, DPR, 0, 0); paintScene(octx);
+    for (const M of ms) { ctx.save(); ctx.transform(...M); ctx.drawImage(off, 0, 0, W, H); ctx.restore(); }
+  }
+  if (!letters.length && !dying.length) {
+    ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = state.pal.ink; ctx.textAlign = 'center';
+    ctx.font = '14px "DM Mono", monospace';
+    ctx.fillText(coarse ? 'tap and type something' : 'type something', W / 2, (H - uiH) / 2);
+    ctx.restore();
+  }
+}
+
+/* =========================================================
+   11. INPUT
+   ========================================================= */
+let composing = false;
+function syncFromField() {
+  const now = performance.now() / 1000;
+  const v = field.value.replace(/[\r\n]+/g, ' ').slice(0, MAX_LETTERS);
+  let p = 0; // keep the common prefix, then edit the end
+  while (p < text.length && p < v.length && text[p] === v[p]) p++;
+  for (let i = text.length; i > p; i--) removeLast(now);
+  for (const ch of v.slice(p)) addLetter(ch, now);
+  text = v;
+}
+field.addEventListener('compositionstart', () => { composing = true; });
+field.addEventListener('compositionend', () => { composing = false; syncFromField(); });
+field.addEventListener('input', () => { if (!composing) syncFromField(); });
+field.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); clearAll(performance.now() / 1000); }
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) e.preventDefault();
+});
+const focusField = () => field.focus({ preventScroll: true });
+canvas.addEventListener('pointerdown', e => { ptr.active = true; ptr.x = e.clientX; ptr.y = e.clientY; focusField(); });
+canvas.addEventListener('pointermove', e => { ptr.active = true; ptr.x = e.clientX; ptr.y = e.clientY; });
+canvas.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') ptr.active = false; });
+canvas.addEventListener('pointerleave', () => { ptr.active = false; });
+canvas.addEventListener('pointercancel', () => { ptr.active = false; });
+
+/* =========================================================
+   12. EXPORT
+   ========================================================= */
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function toSVG() {
+  const now = performance.now() / 1000, ms = buildScene(now), a = scene.xy, f1 = v => (+v).toFixed(1);
+  let body = '';
+  for (const M of ms) {
+    body += `<g transform="matrix(${M.map(v => +v.toFixed(4)).join(' ')})" stroke-width="0.9" stroke-linejoin="round">`;
+    for (let i = 0; i < scene.n; i++) {
+      const o = i * 6, f = scene.fill[i];
+      body += `<polygon points="${f1(a[o])},${f1(a[o + 1])} ${f1(a[o + 2])},${f1(a[o + 3])} ${f1(a[o + 4])},${f1(a[o + 5])}" fill="${f}" stroke="${f}"/>`;
+    }
+    body += '</g>';
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<rect width="${W}" height="${H}" fill="${state.pal.bg}"/>${body}</svg>`;
+}
+
+/* =========================================================
+   13. UI
+   ========================================================= */
+function applyPalette(i) {
+  state.pal = PALETTES[i]; state.palVer++;
+  const r = document.documentElement.style;
+  r.setProperty('--bg', state.pal.bg); r.setProperty('--ink', state.pal.ink);
+  [...$('swatches').children].forEach((b, k) => b.setAttribute('aria-pressed', k === i ? 'true' : 'false'));
+}
+PALETTES.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.className = 'sw'; b.type = 'button'; b.title = p.name; b.setAttribute('aria-label', 'Palette ' + p.name);
+  b.style.background = `linear-gradient(135deg, ${p.colors.slice(0, 3).join(',')})`;
+  b.style.boxShadow = `inset 0 0 0 3px ${p.bg}`;
+  b.addEventListener('click', () => { applyPalette(i); focusField(); });
+  $('swatches').appendChild(b);
+});
+FONTS.forEach((f, i) => { const o = document.createElement('option'); o.value = i; o.textContent = f.label; $('font').appendChild(o); });
+$('font').addEventListener('change', e => { state.fontIdx = +e.target.value; metricCache = new Map(); loadFont(); rebuildAll(); focusField(); });
+$('styleBtn').addEventListener('click', () => {
+  state.style = state.style === 'paper' ? 'mono' : 'paper'; state.palVer++;
+  $('styleBtn').textContent = 'Style: ' + state.style; focusField();
+});
+$('sym').addEventListener('change', e => { state.sym = e.target.value; relayout(); focusField(); });
+$('ptrMode').addEventListener('change', e => { state.pointer = e.target.value; focusField(); });
+$('speed').addEventListener('input', e => { state.speed = +e.target.value; });
+$('clear').addEventListener('click', () => { clearAll(performance.now() / 1000); focusField(); });
+$('png').addEventListener('click', () => { draw(performance.now() / 1000); canvas.toBlob(b => download(b, 'origami-type.png')); });
+$('svg').addEventListener('click', () => download(new Blob([toSVG()], { type: 'image/svg+xml' }), 'origami-type.svg'));
+$('hint').textContent = coarse
+  ? 'tap to type · space adds a ribbon · delete refolds'
+  : 'type to unfold · space adds a ribbon · backspace refolds · enter clears · move the pointer to crease the paper';
+
+function loadFont() {
+  const f = curFont();
+  if (!document.fonts || !document.fonts.load) return;
+  document.fonts.load(`${f.weight} 100px "${f.family}"`).then(() => { metricCache = new Map(); rebuildAll(); }).catch(() => {});
+}
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight; uiH = bar.offsetHeight;
+  canvas.width = off.width = Math.round(W * DPR); canvas.height = off.height = Math.round(H * DPR);
+  relayout();
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   14. START
+   ========================================================= */
+function frame(ts) {
+  const now = ts / 1000, dt = Math.min(0.05, Math.max(0.001, now - (last || now - 0.016)));
+  last = now;
+  update(now, dt); draw(now);
+  requestAnimationFrame(frame);
+}
+applyPalette(0); loadFont(); resize(); focusField();
+window.__origami = { type: s => { field.value = s; syncFromField(); }, state, stats: () => ({ tris: scene.n, letters: letters.length }) };
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

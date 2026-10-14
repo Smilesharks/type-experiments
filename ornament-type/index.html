@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Ornament Type</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Alfa+Slab+One&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@900&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0a0a0a; --ink:#f4efe6; --accent:#ff3b1f; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family:"DM Mono", ui-monospace, Menlo, monospace; font-size:12px; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+  #field { position:fixed; left:0; top:0; width:1px; height:1px; opacity:0; border:0; padding:0;
+    font-size:16px; /* 16px avoids the iOS zoom on focus */ pointer-events:none; }
+  .bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:10px; pointer-events:none; }
+  .bar > * { pointer-events:auto; }
+  .hint { opacity:.55; letter-spacing:.02em; }
+  .controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+  .swatches { display:flex; gap:6px; }
+  .sw { width:20px; height:20px; border-radius:50%; border:1px solid color-mix(in srgb, var(--ink) 40%, transparent);
+    padding:0; cursor:pointer; position:relative; overflow:hidden; }
+  .sw::after { content:""; position:absolute; right:0; bottom:0; width:50%; height:50%; background:var(--a); }
+  .sw[aria-pressed="true"] { outline:2px solid var(--ink); outline-offset:2px; }
+  button, select { font:inherit; color:var(--ink); background:transparent; cursor:pointer;
+    border:1px solid color-mix(in srgb, var(--ink) 40%, transparent); border-radius:999px; padding:5px 12px; }
+  select option { color:#111; background:#fff; }
+  button:hover, select:hover { border-color:var(--ink); }
+  button:focus-visible, select:focus-visible, input[type=range]:focus-visible, .sw:focus-visible {
+    outline:2px solid var(--ink); outline-offset:2px; }
+  label { display:inline-flex; align-items:center; gap:6px; opacity:.9; }
+  input[type=range] { accent-color:var(--ink); width:90px; }
+  @media (max-width:640px) { .hint { font-size:11px; } .controls { gap:6px 8px; } }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Ornament type canvas"></canvas>
+<input id="field" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="60" aria-label="Type here">
+
+<div class="bar" id="bar">
+  <div class="hint" id="hint"></div>
+  <div class="controls">
+    <div class="swatches" id="swatches" role="group" aria-label="Palette"></div>
+    <label>Font <select id="font"></select></label>
+    <button id="styleBtn" type="button">Style: ink</button>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">off</option>
+        <option value="mirrorH">mirror horizontal</option>
+        <option value="mirrorV">mirror vertical</option>
+        <option value="kal4">kaleidoscope 4</option>
+        <option value="kal6">kaleidoscope 6</option>
+      </select>
+    </label>
+    <label>Pointer
+      <select id="ptrMode">
+        <option value="push">push</option>
+        <option value="pull">pull</option>
+        <option value="off">off</option>
+      </select>
+    </label>
+    <label>Calm <input id="calm" type="range" min="0" max="1" step="0.01" value="0.4"></label>
+    <button id="png" type="button">PNG</button>
+    <button id="svg" type="button">SVG</button>
+    <button id="clear" type="button">Clear</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* =========================================================
+   1. CONFIG
+   ========================================================= */
+const PALETTES = [
+  { name:'Noir',     bg:'#0a0a0a', ink:'#f4efe6', accent:'#ff3b1f' },
+  { name:'Paper',    bg:'#f2ece0', ink:'#141414', accent:'#d6361f' },
+  { name:'Midnight', bg:'#0d1b4c', ink:'#fff4e6', accent:'#ff7a59' },
+  { name:'Citrus',   bg:'#10291b', ink:'#fff3d6', accent:'#ffa31a' },
+  { name:'Orchid',   bg:'#170b24', ink:'#fbeaff', accent:'#e046ff' },
+  { name:'Moss',     bg:'#143a2a', ink:'#f6f1e7', accent:'#ffb7c5' },
+  { name:'Tomato',   bg:'#e8361c', ink:'#140a08', accent:'#fff1e0' },
+  { name:'Mono',     bg:'#000000', ink:'#ffffff', accent:'#8a8a8a' },
+];
+// Font is a config value: change the default here or use the select in the UI.
+const FONTS = [
+  { label:'Bold serif', family:'Playfair Display', weight:900 },
+  { label:'Fat face',   family:'Abril Fatface',    weight:400 },
+  { label:'Slab',       family:'Alfa Slab One',    weight:400 },
+];
+const MAX_LETTERS = 60;
+const MIN_FS = 18;
+const LINE_H = 1.45;     // line height in em, leaves room for ornaments
+const POINTER_R = 200;   // pointer influence radius in px
+
+/* =========================================================
+   2. MATH HELPERS
+   ========================================================= */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const easeOutBack = t => { const c1 = 1.25, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+
+function hash(str) { // FNV-1a, deterministic seed from text
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function rng(seed) { // mulberry32
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// Cheap smooth 1D noise from three sines, range about -1..1
+const noise = x => Math.sin(x) * 0.6 + Math.sin(x * 2.3 + 1.7) * 0.3 + Math.sin(x * 4.1 + 4.2) * 0.1;
+
+// Chaikin corner cutting: each pass rounds the polyline, so 20 rope points become a smooth curve
+function chaikin(P, iter) {
+  for (let it = 0; it < iter; it++) {
+    const Q = [P[0]];
+    for (let i = 0; i < P.length - 1; i++) {
+      const a = P[i], b = P[i + 1];
+      Q.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25],
+             [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    Q.push(P[P.length - 1]);
+    P = Q;
+  }
+  return P;
+}
+// Resample a polyline to n evenly spaced points (so rope segments have equal length)
+function resample(pts, n) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const tot = cum[cum.length - 1] || 1e-6, out = [];
+  let j = 1;
+  for (let k = 0; k < n; k++) {
+    const d = tot * k / (n - 1);
+    while (j < cum.length - 1 && cum[j] < d) j++;
+    const seg = cum[j] - cum[j - 1] || 1e-6;
+    const u = clamp((d - cum[j - 1]) / seg, 0, 1);
+    out.push([pts[j - 1][0] + (pts[j][0] - pts[j - 1][0]) * u, pts[j - 1][1] + (pts[j][1] - pts[j - 1][1]) * u]);
+  }
+  return { pts: out, len: tot };
+}
+const dirVec = a => [Math.cos(a), Math.sin(a)];
+
+/* =========================================================
+   3. ROPE SHAPES (rest poses, in em units, anchor at 0,0)
+   The rope is pulled toward these shapes by springs, so
+   ornaments keep their design but sway and bounce.
+   ========================================================= */
+// Short stem, then a spiral that tightens toward the end
+function shapeCurl(ang, sgn, R, stem, turns) {
+  const d = dirVec(ang), S1 = [d[0] * stem, d[1] * stem];
+  const perp = [-d[1] * sgn, d[0] * sgn];
+  const c = [S1[0] + perp[0] * R, S1[1] + perp[1] * R];
+  const a0 = Math.atan2(S1[1] - c[1], S1[0] - c[0]);
+  const s = sgn; // rotation sign that makes the spiral start along `dir`
+  const pts = [[0, 0], S1], steps = 44, total = turns * 2 * Math.PI;
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps, r = R * (1 - 0.82 * f), a = a0 + s * total * f;
+    pts.push([c[0] + Math.cos(a) * r, c[1] + Math.sin(a) * r]);
+  }
+  return pts;
+}
+// Long S curve with a hook at the end
+function shapeSwash(ang, sgn, L, A) {
+  const d = dirVec(ang), p = [-d[1], d[0]], pts = [], n = 36;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, u = L * t;
+    const v = sgn * A * Math.sin(Math.PI * 1.55 * t) * (0.45 + 0.55 * t);
+    pts.push([d[0] * u + p[0] * v, d[1] * u + p[1] * v]);
+  }
+  return pts;
+}
+// Gentle bent stem used by the diamond ornament
+function shapeStem(ang, sgn, L) {
+  const d = dirVec(ang), p = [-d[1], d[0]], pts = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8, u = L * t, v = sgn * 0.06 * Math.sin(Math.PI * t);
+    pts.push([d[0] * u + p[0] * v, d[1] * u + p[1] * v]);
+  }
+  return pts;
+}
+// Three dots along a small arc
+function shapeDots(ang, sgn) {
+  const d = dirVec(ang), p = [-d[1], d[0]];
+  return [0.1, 0.2, 0.29].map((u, i) => [d[0] * u + p[0] * sgn * 0.04 * i, d[1] * u + p[1] * sgn * 0.04 * i]);
+}
+function bez(p0, p1, p2, p3, n) {
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, m = 1 - t;
+    out.push([
+      m*m*m*p0[0] + 3*m*m*t*p1[0] + 3*m*t*t*p2[0] + t*t*t*p3[0],
+      m*m*m*p0[1] + 3*m*m*t*p1[1] + 3*m*t*t*p2[1] + t*t*t*p3[1],
+    ]);
+  }
+  return out;
+}
+// Word tail: leaves the end of the word, sweeps back under it, ends with a small hook
+function shapeTail(Wem) {
+  const a = bez([0, -0.02], [0.3, 0.38], [-0.3 * Wem - 0.1, 0.66], [-Wem * 0.92, 0.3], 36);
+  const b = bez([-Wem * 0.92, 0.3], [-Wem - 0.14, 0.1], [-Wem - 0.08, -0.12], [-Wem * 0.9, -0.08], 10);
+  return a.concat(b.slice(1));
+}
+
+// Width profiles (em, t = 0 at the letter, 1 at the tip)
+const WIDTH = {
+  curl:  t => 0.085 * (1 - 0.55 * t),
+  swash: t => 0.1 * Math.pow(1 - t, 0.85) + 0.005,
+  tail:  t => 0.105 * Math.pow(1 - t, 0.75) + 0.005,
+  thin:  t => 0.04 * (1 - 0.3 * t),
+};
+
+/* =========================================================
+   4. STATE
+   ========================================================= */
+const $ = id => document.getElementById(id);
+const canvas = $('c'), ctx = canvas.getContext('2d');
+const field = $('field'), bar = $('bar');
+let W = 0, H = 0, DPR = 1, uiH = 0;
+const state = { pal: PALETTES[0], fontIdx: 0, style: 'ink', sym: 'off', pointer: 'push', calm: 0.4 };
+let letters = [], dying = [], text = '';
+let fsT = 120, fsC = 120, nextId = 1;
+const ptr = { x: -9999, y: -9999, vx: 0, vy: 0, active: false, lastT: 0 };
+const curFont = () => FONTS[state.fontIdx];
+const fontStr = size => `${curFont().weight} ${size}px "${curFont().family}", Georgia, serif`;
+
+/* =========================================================
+   5. METRICS, LAYOUT
+   ========================================================= */
+let metricCache = new Map();
+function metrics(ch) {
+  const key = curFont().family + ch;
+  let m = metricCache.get(key);
+  if (!m) {
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.font = fontStr(200); ctx.textAlign = 'left';
+    const t = ctx.measureText(ch);
+    ctx.restore();
+    m = { w: t.width / 200, l: t.actualBoundingBoxLeft / 200, r: t.actualBoundingBoxRight / 200,
+          asc: t.actualBoundingBoxAscent / 200, desc: t.actualBoundingBoxDescent / 200 };
+    metricCache.set(key, m);
+  }
+  return m;
+}
+function layoutBox() {
+  const Hh = H - uiH, cy0 = Hh / 2, m = Math.min(W, Hh);
+  switch (state.sym) {
+    case 'mirrorH': return { cx: W * 0.26, cy: cy0, w: W * 0.4, h: Hh * 0.6 };
+    case 'mirrorV': return { cx: W / 2, cy: cy0 - Hh * 0.2, w: W * 0.72, h: Hh * 0.3 };
+    case 'kal4': case 'kal6': return { cx: W / 2, cy: cy0 - m * 0.27, w: m * 0.5, h: m * 0.26 };
+    default: return { cx: W / 2, cy: cy0, w: W * 0.72, h: Hh * 0.6 };
+  }
+}
+function breakLines(fs, boxW) {
+  const lines = [{ items: [], w: 0 }];
+  let i = 0;
+  while (i < letters.length) {
+    const L = letters[i];
+    let cur = lines[lines.length - 1];
+    if (L.ch === ' ') { cur.items.push(L); cur.w += metrics(' ').w * fs; i++; continue; }
+    let j = i, ww = 0;
+    while (j < letters.length && letters[j].ch !== ' ') { ww += metrics(letters[j].ch).w * fs; j++; }
+    const hasContent = cur.items.some(l => l.ch !== ' ');
+    if (hasContent && cur.w + ww > boxW) { cur = { items: [], w: 0 }; lines.push(cur); }
+    for (let k = i; k < j; k++) cur.items.push(letters[k]);
+    cur.w += ww; i = j;
+  }
+  for (const ln of lines) { // width without trailing spaces, used for centering
+    let w = ln.w, k = ln.items.length - 1;
+    while (k >= 0 && ln.items[k].ch === ' ') { w -= metrics(' ').w * fs; k--; }
+    ln.cw = Math.max(0, w);
+  }
+  return lines;
+}
+function fits(fs, box) {
+  const lines = breakLines(fs, box.w);
+  const maxW = Math.max(...lines.map(l => l.cw));
+  return maxW <= box.w && lines.length * LINE_H * fs <= box.h;
+}
+function relayout() {
+  if (!letters.length) return;
+  const box = layoutBox();
+  const maxFs = Math.min((H - uiH) * 0.24, W * 0.2);
+  let lo = MIN_FS, hi = Math.max(MIN_FS, maxFs);
+  if (fits(hi, box)) lo = hi;
+  else for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (fits(mid, box)) lo = mid; else hi = mid; }
+  fsT = lo;
+  const lines = breakLines(lo, box.w), lh = LINE_H * lo, top = box.cy - lines.length * lh / 2;
+  lines.forEach((ln, li) => {
+    let x = box.cx - ln.cw / 2;
+    const base = top + (li + 0.5) * lh + 0.32 * lo;
+    for (const L of ln.items) {
+      const adv = metrics(L.ch).w * lo;
+      L.tx = x + adv / 2; L.ty = base; x += adv;
+    }
+  });
+}
+
+/* =========================================================
+   6. ORNAMENT GENERATOR (seeded: same word, same design)
+   ========================================================= */
+const isOrnChar = ch => /[\p{L}\p{N}]/u.test(ch);
+
+function anchorAt(m, kind, r) {
+  const xmin = -m.l - m.w / 2, xmax = m.r - m.w / 2, cx = (xmin + xmax) / 2;
+  const top = -m.asc, bot = Math.max(m.desc, 0), jitter = (xmax - xmin) * 0.5;
+  switch (kind) {
+    case 'top':    return { x: cx + (r() - 0.5) * jitter, y: top + 0.05, ang: -Math.PI / 2 + (r() - 0.5) * 0.9 };
+    case 'bottom': return { x: cx + (r() - 0.5) * jitter, y: bot - 0.05, ang: Math.PI / 2 + (r() - 0.5) * 0.9 };
+    case 'left':   return { x: xmin + 0.06, y: top * 0.5, ang: Math.PI + (r() - 0.5) * 1.0 };
+    default:       return { x: xmax - 0.06, y: top * 0.4, ang: (r() - 0.5) * 1.0 };
+  }
+}
+function pickType(kind, r) {
+  const t = r();
+  if (kind === 'top') return t < 0.35 ? 'curl' : t < 0.6 ? 'swash' : t < 0.8 ? 'diamond' : 'dots';
+  if (kind === 'bottom') return t < 0.3 ? 'curl' : t < 0.55 ? 'flourish' : t < 0.75 ? 'swash' : 'dots';
+  return t < 0.5 ? 'curl' : 'swash';
+}
+function specsFor(type, a, r) {
+  const sgn = r() < 0.5 ? -1 : 1;
+  switch (type) {
+    case 'curl':    return [{ kind: 'stroke', pts: shapeCurl(a.ang, sgn, 0.17 + r() * 0.1, 0.16 + r() * 0.14, 1.1 + r() * 0.6), w: 'curl', term: 'ball', ks: 70, n: 22 }];
+    case 'swash':   return [{ kind: 'stroke', pts: shapeSwash(a.ang, sgn, 0.55 + r() * 0.5, 0.16 + r() * 0.14), w: 'swash', term: 'none', ks: 60, n: 22 }];
+    case 'diamond': return [{ kind: 'stroke', pts: shapeStem(a.ang, sgn, 0.26 + r() * 0.12), w: 'thin', term: 'diamond', ks: 80, n: 10 }];
+    case 'dots':    return [{ kind: 'dots', pts: shapeDots(a.ang, sgn), ks: 90, n: 3 }];
+    case 'flourish': // two mirrored curls joined at the anchor
+      return [-1, 1].map(s => ({ kind: 'stroke', pts: shapeCurl(Math.PI / 2 + s * (0.8 + r() * 0.2), -s, 0.14 + r() * 0.06, 0.14, 1.2 + r() * 0.4), w: 'curl', term: 'ball', ks: 70, n: 22 }));
+  }
+  return [];
+}
+function buildOrnament(spec, a, now, r) {
+  const rs = spec.kind === 'dots' ? { pts: spec.pts, len: 0.3 } : resample(spec.pts, spec.n);
+  return { kind: spec.kind, rest: rs.pts, n: rs.pts.length, seg: rs.len / (rs.pts.length - 1),
+    ax: a.x, ay: a.y, w: spec.w, term: spec.term, ks: spec.ks, ph: r() * 100,
+    born: now, delay: 0.04 + r() * 0.1, dur: 0.35 + r() * 0.4, g: 0, init: false, pts: [] };
+}
+function makeOrnaments(L, prefix, now) {
+  const m = metrics(L.ch), r = rng(hash(prefix) ^ Math.imul(L.wi + 1, 2654435761));
+  const plan = [];
+  if (L.wi === 0) plan.push([r() < 0.5 ? 'left' : 'top', r() < 0.6 ? 'swash' : 'curl']);
+  if (r() < (L.wi === 0 ? 0.5 : 0.6)) { const k = ['top', 'bottom', 'bottom', 'right'][Math.floor(r() * 4)]; plan.push([k, pickType(k, r)]); }
+  if (L.wi > 0 && r() < 0.15) { const k = r() < 0.5 ? 'top' : 'bottom'; plan.push([k, pickType(k, r)]); }
+  for (const [kind, type] of plan) {
+    const a = anchorAt(m, kind, r);
+    for (const s of specsFor(type, a, r)) L.orns.push(buildOrnament(s, a, now, r));
+  }
+}
+function makeTail(L, wordLetters, now) {
+  const Wem = wordLetters.reduce((s, l) => s + metrics(l.ch).w, 0);
+  const r = rng(hash(wordLetters.map(l => l.ch).join('')) ^ 0x9e3779b9);
+  const a = { x: -metrics(' ').w / 2 - 0.02, y: 0.02 };
+  const o = buildOrnament({ kind: 'stroke', pts: shapeTail(Wem), w: 'tail', term: r() < 0.5 ? 'ball' : 'none', ks: 55, n: 34 }, a, now, r);
+  o.delay = 0.02; o.dur = 0.5 + Math.min(0.4, Wem * 0.08);
+  L.orns.push(o);
+}
+
+/* =========================================================
+   7. LETTERS: add, remove, physics
+   ========================================================= */
+function addLetter(ch, now) {
+  if (letters.length >= MAX_LETTERS) return;
+  let ws = letters.length;
+  while (ws > 0 && letters[ws - 1].ch !== ' ') ws--;
+  const L = { id: nextId++, ch, x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, scale: 0, sv: 0,
+    rot: (Math.random() - 0.5) * 0.5, rv: 0, orns: [], dead: 0, wi: ch === ' ' ? 0 : letters.length - ws };
+  const word = letters.slice(ws);
+  letters.push(L);
+  if (ch === ' ') {
+    const prev = letters[letters.length - 2];
+    if (prev && prev.ch !== ' ') makeTail(L, word, now);
+  } else if (isOrnChar(ch)) {
+    makeOrnaments(L, word.map(l => l.ch).join('') + ch, now);
+  }
+  relayout();
+  L.x = L.tx; L.y = L.ty + fsT * 0.15;
+  // small kick to the neighbours so the line wobbles when a letter lands
+  for (let k = 1; k <= 3; k++) {
+    const N = letters[letters.length - 1 - k]; if (!N) break;
+    N.vy -= (220 / k) * (fsT / 200); N.rv += (Math.random() - 0.5) * 2 / k;
+  }
+}
+function removeLast(now) {
+  const L = letters.pop(); if (!L) return;
+  L.dead = now; dying.push(L);
+  relayout();
+}
+function clearAll(now) {
+  while (letters.length) { const L = letters.pop(); L.dead = now; dying.push(L); }
+  text = ''; field.value = '';
+}
+
+function stepLetter(L, h, now, t) {
+  const calm = state.calm, dead = !!L.dead;
+  const k = 170 * (0.8 + 0.6 * calm), d = 2 * Math.sqrt(k) * 0.42;
+  L.vx += ((L.tx - L.x) * k - L.vx * d) * h; L.x += L.vx * h;
+  if (dead) { L.vy += (160 * (fsC / 200)) * h; L.y += L.vy * h; } // dying letters drop slightly
+  else { L.vy += ((L.ty - L.y) * k - L.vy * d) * h; L.y += L.vy * h; }
+  const ks = 240, ds = 2 * Math.sqrt(ks) * 0.38, target = dead ? 0 : 1;
+  L.sv += ((target - L.scale) * ks - L.sv * ds) * h; L.scale += L.sv * h;
+  const kr = 120, dr = 2 * Math.sqrt(kr) * 0.35, rt = dead ? 0 : 0.012 * Math.sin(t * 0.8 + L.id);
+  L.rv += ((rt - L.rot) * kr - L.rv * dr) * h; L.rot += L.rv * h;
+}
+
+function stepOrnament(o, L, h, t, ptrs) {
+  const S = fsC, sc = S * Math.max(L.scale, 0), cos = Math.cos(L.rot), sin = Math.sin(L.rot);
+  const ax = L.x + (o.ax * cos - o.ay * sin) * sc, ay = L.y + (o.ax * sin + o.ay * cos) * sc;
+  const calm = state.calm, motion = 0.15 + 0.85 * (1 - calm), stiff = 0.7 + 0.8 * calm;
+  const damp = Math.pow(0.9, h * 60), unit = S / 200, sign = state.pointer === 'pull' ? -1 : 1;
+  const g = o.g;
+  if (!o.init) { o.pts = o.rest.map(() => ({ x: ax, y: ay, px: ax, py: ay })); o.init = true; }
+  for (let i = 0; i < o.n; i++) {
+    const p = o.pts[i];
+    if (i === 0) { p.x = p.px = ax; p.y = p.py = ay; continue; }
+    const f = i / (o.n - 1);
+    const rx = o.rest[i][0] * g, ry = o.rest[i][1] * g;
+    const tx = ax + (rx * cos - ry * sin) * sc, ty = ay + (rx * sin + ry * cos) * sc;
+    const ks = o.ks * (1 - 0.8 * f) * stiff;
+    let fx = (tx - p.x) * ks, fy = (ty - p.y) * ks;
+    // wind (never zero, so ornaments keep a light idle sway) and gravity
+    fx += noise(t * 0.9 + o.ph + p.x * 0.004) * 520 * unit * motion * f;
+    fy += (noise(t * 0.7 + o.ph * 1.3 + p.y * 0.004) * 220 + 260) * unit * motion * f;
+    // pointer push or pull with a smooth falloff
+    if (state.pointer !== 'off') for (const q of ptrs) {
+      const dx = p.x - q.x, dy = p.y - q.y, d = Math.hypot(dx, dy);
+      if (d < POINTER_R && d > 0.001) {
+        const fall = 1 - smoothstep(0, POINTER_R, d), inner = Math.min(d / 40, 1);
+        const mag = 4200 * fall * inner * (0.3 + f) * sign;
+        fx += dx / d * mag; fy += dy / d * mag;
+      }
+    }
+    const vx = (p.x - p.px) * damp, vy = (p.y - p.py) * damp;
+    p.px = p.x; p.py = p.y;
+    p.x += vx + fx * h * h; p.y += vy + fy * h * h;
+  }
+  // limit stretching so strong pushes cannot tear the rope
+  const len = o.seg * sc * Math.max(g, 0.001) * 1.25;
+  for (let it = 0; it < 3; it++) for (let i = 1; i < o.n; i++) {
+    const a = o.pts[i - 1], b = o.pts[i];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if (d > len && d > 1e-6) {
+      const e = (d - len) / d;
+      if (i - 1 === 0) { b.x -= dx * e; b.y -= dy * e; }
+      else { a.x += dx * e * 0.5; a.y += dy * e * 0.5; b.x -= dx * e * 0.5; b.y -= dy * e * 0.5; }
+    }
+  }
+}
+
+/* =========================================================
+   8. SYMMETRY COPIES, POINTER MAPPING
+   ========================================================= */
+function copies() {
+  const cy0 = (H - uiH) / 2, cx0 = W / 2;
+  switch (state.sym) {
+    case 'mirrorH': return [[1, 0, 0, 1, 0, 0], [-1, 0, 0, 1, W, 0]];
+    case 'mirrorV': return [[1, 0, 0, 1, 0, 0], [1, 0, 0, -1, 0, 2 * cy0]];
+    case 'kal4': case 'kal6': {
+      const N = state.sym === 'kal4' ? 4 : 6, out = [];
+      for (let k = 0; k < N; k++) {
+        const a = 2 * Math.PI * k / N, c = Math.cos(a), s = Math.sin(a);
+        out.push([c, s, -s, c, cx0 - c * cx0 + s * cy0, cy0 - s * cx0 - c * cy0]);
+      }
+      return out;
+    }
+    default: return [[1, 0, 0, 1, 0, 0]];
+  }
+}
+function invert(M, x, y) {
+  const [a, b, c, d, e, f] = M, det = a * d - b * c;
+  return { x: (d * (x - e) - c * (y - f)) / det, y: (-b * (x - e) + a * (y - f)) / det };
+}
+
+/* =========================================================
+   9. UPDATE
+   ========================================================= */
+let last = 0;
+function update(now, dt) {
+  fsC += (fsT - fsC) * (1 - Math.exp(-10 * dt));
+  const ms = copies();
+  const ptrs = ptr.active ? ms.map(M => invert(M, ptr.x, ptr.y)) : [];
+  const speed = Math.hypot(ptr.vx, ptr.vy);
+
+  // ornament growth (once per frame)
+  for (const L of letters) for (const o of L.orns) {
+    const p = clamp((now - o.born - o.delay) / o.dur, 0, 1);
+    o.g = p <= 0 ? 0 : easeOutBack(p);
+  }
+  for (const L of dying) for (const o of L.orns) o.g = Math.max(0, o.g - dt / 0.35); // rope pulled back
+
+  // shake: fast pointer movement over a letter makes it jiggle
+  if (ptr.active && speed > 700) {
+    for (const L of letters) for (const q of ptrs) {
+      if (Math.hypot(L.x - q.x, L.y - q.y - fsC * 0.3) < fsC * 0.7) {
+        L.vx += clamp(ptr.vx * 0.04, -300, 300) * 0.3; L.vy += clamp(ptr.vy * 0.04, -300, 300) * 0.3;
+        L.rv += (Math.random() - 0.5) * 3;
+      }
+    }
+  }
+  ptr.vx *= Math.exp(-6 * dt); ptr.vy *= Math.exp(-6 * dt);
+
+  const steps = clamp(Math.ceil(dt * 90), 1, 4), h = dt / steps;
+  for (let s = 0; s < steps; s++) {
+    for (const L of letters) { stepLetter(L, h, now, now); for (const o of L.orns) stepOrnament(o, L, h, now, ptrs); }
+    for (const L of dying)   { stepLetter(L, h, now, now); for (const o of L.orns) stepOrnament(o, L, h, now, ptrs); }
+  }
+  dying = dying.filter(L => now - L.dead < 0.9 && (L.scale > 0.02 || L.orns.some(o => o.g > 0.02)));
+}
+
+/* =========================================================
+   10. RENDERER (shape list shared by canvas and SVG)
+   ========================================================= */
+function strokePoly(pts, wfn, scale) {
+  const P = chaikin(pts.map(p => [p.x, p.y]), 2), n = P.length, cum = [0];
+  for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(P[i][0] - P[i - 1][0], P[i][1] - P[i - 1][1]));
+  const tot = cum[n - 1] || 1, left = [], right = [];
+  let tx = 1, ty = 0;
+  for (let i = 0; i < n; i++) {
+    const a = P[Math.max(0, i - 1)], b = P[Math.min(n - 1, i + 1)];
+    let dx = b[0] - a[0], dy = b[1] - a[1]; const l = Math.hypot(dx, dy);
+    if (l > 1e-6) { dx /= l; dy /= l; tx = dx; ty = dy; } else { dx = tx; dy = ty; }
+    const w = wfn(cum[i] / tot) * scale * 0.5;
+    left.push(P[i][0] - dy * w, P[i][1] + dx * w);
+    right.push(P[i][0] + dy * w, P[i][1] - dx * w);
+  }
+  const poly = [];
+  for (let i = 0; i < n; i++) poly.push(left[2 * i], left[2 * i + 1]);
+  for (let i = n - 1; i >= 0; i--) poly.push(right[2 * i], right[2 * i + 1]);
+  const e = P[n - 1];
+  return { poly, tip: { x: e[0], y: e[1], ang: Math.atan2(ty, tx) } };
+}
+
+function ornamentShapes(o, L, out) {
+  if (o.g < 0.03 || !o.init) return;
+  const pal = state.pal, filled = state.style === 'filled';
+  const fill = filled ? pal.accent : pal.ink, stroke = filled ? pal.ink : null;
+  const sc = fsC * Math.max(L.scale, 0) * clamp(o.g, 0, 1.1), lw = Math.max(1, fsC * 0.008);
+  if (o.kind === 'dots') {
+    const radii = [0.055, 0.042, 0.03];
+    o.pts.forEach((p, i) => out.push({ t: 'c', x: p.x, y: p.y, r: radii[i] * sc, fill, stroke, lw }));
+    return;
+  }
+  const sp = strokePoly(o.pts, WIDTH[o.w], sc);
+  out.push({ t: 'p', pts: sp.poly, fill, stroke, lw });
+  if (o.term === 'ball') out.push({ t: 'c', x: sp.tip.x, y: sp.tip.y, r: 0.05 * sc, fill, stroke, lw });
+  if (o.term === 'diamond') {
+    const a = sp.tip.ang, c = Math.cos(a), s = Math.sin(a), len = 0.08 * sc, wd = 0.042 * sc;
+    const pt = (u, v) => [sp.tip.x + c * u - s * v, sp.tip.y + s * u + c * v];
+    out.push({ t: 'p', pts: [...pt(-len * 0.2, 0), ...pt(len * 0.6, wd), ...pt(len * 1.4, 0), ...pt(len * 0.6, -wd)], fill, stroke, lw });
+  }
+}
+function buildShapes() {
+  const out = [];
+  for (const L of dying) for (const o of L.orns) ornamentShapes(o, L, out);
+  for (const L of letters) for (const o of L.orns) ornamentShapes(o, L, out);
+  const fill = state.pal.ink;
+  for (const L of dying.concat(letters)) {
+    if (L.ch === ' ' || L.scale < 0.01) continue;
+    out.push({ t: 't', ch: L.ch, x: L.x, y: L.y, rot: L.rot, sc: Math.max(L.scale, 0), size: fsC, fill });
+  }
+  return out;
+}
+function paint(c, shapes) {
+  for (const s of shapes) {
+    if (s.t === 'p') {
+      c.beginPath(); c.moveTo(s.pts[0], s.pts[1]);
+      for (let i = 2; i < s.pts.length; i += 2) c.lineTo(s.pts[i], s.pts[i + 1]);
+      c.closePath(); c.fillStyle = s.fill; c.fill();
+      if (s.stroke) { c.strokeStyle = s.stroke; c.lineWidth = s.lw; c.lineJoin = 'round'; c.stroke(); }
+    } else if (s.t === 'c') {
+      c.beginPath(); c.arc(s.x, s.y, Math.max(0, s.r), 0, Math.PI * 2); c.fillStyle = s.fill; c.fill();
+      if (s.stroke) { c.strokeStyle = s.stroke; c.lineWidth = s.lw; c.stroke(); }
+    } else {
+      c.save(); c.translate(s.x, s.y); c.rotate(s.rot); c.scale(s.sc, s.sc);
+      c.font = fontStr(s.size); c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      c.fillStyle = s.fill; c.fillText(s.ch, 0, 0); c.restore();
+    }
+  }
+}
+function draw() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = state.pal.bg; ctx.fillRect(0, 0, W, H);
+  const shapes = buildShapes();
+  for (const M of copies()) { ctx.save(); ctx.transform(...M); paint(ctx, shapes); ctx.restore(); }
+  if (!letters.length && !dying.length) {
+    ctx.save(); ctx.globalAlpha = 0.4; ctx.fillStyle = state.pal.ink; ctx.textAlign = 'center';
+    ctx.font = '14px "DM Mono", monospace';
+    ctx.fillText(coarse ? 'tap and type something' : 'type something', W / 2, (H - uiH) / 2);
+    ctx.restore();
+  }
+}
+
+/* =========================================================
+   11. INPUT (hidden field handles desktop, mobile, IME)
+   ========================================================= */
+const coarse = matchMedia('(pointer:coarse)').matches;
+let composing = false;
+function syncFromField() {
+  const now = performance.now() / 1000;
+  const v = field.value.replace(/[\r\n]+/g, ' ').slice(0, MAX_LETTERS);
+  let p = 0; // diff against the current text: keep the common prefix, then edit the end
+  while (p < text.length && p < v.length && text[p] === v[p]) p++;
+  for (let i = text.length; i > p; i--) removeLast(now);
+  for (const ch of v.slice(p)) addLetter(ch, now);
+  text = v;
+}
+field.addEventListener('compositionstart', () => { composing = true; });
+field.addEventListener('compositionend', () => { composing = false; syncFromField(); });
+field.addEventListener('input', () => { if (!composing) syncFromField(); });
+field.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); clearAll(performance.now() / 1000); }
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) e.preventDefault();
+});
+const focusField = () => field.focus({ preventScroll: true });
+
+canvas.addEventListener('pointerdown', e => { ptr.active = true; setPtr(e); focusField(); });
+canvas.addEventListener('pointermove', e => setPtr(e));
+canvas.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') ptr.active = false; });
+canvas.addEventListener('pointerleave', () => { ptr.active = false; });
+canvas.addEventListener('pointercancel', () => { ptr.active = false; });
+function setPtr(e) {
+  const t = performance.now() / 1000, dt = Math.max(0.008, t - ptr.lastT);
+  if (ptr.active && ptr.x > -9000) {
+    ptr.vx = ptr.vx * 0.6 + ((e.clientX - ptr.x) / dt) * 0.4;
+    ptr.vy = ptr.vy * 0.6 + ((e.clientY - ptr.y) / dt) * 0.4;
+  }
+  ptr.x = e.clientX; ptr.y = e.clientY; ptr.lastT = t; ptr.active = true;
+}
+
+/* =========================================================
+   12. EXPORT
+   ========================================================= */
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const n1 = v => (+v).toFixed(1);
+function toSVG() {
+  draw(); // make sure positions are current
+  const shapes = buildShapes(), f = curFont(), pal = state.pal;
+  let body = '';
+  for (const M of copies()) {
+    body += `<g transform="matrix(${M.map(v => +v.toFixed(4)).join(' ')})">`;
+    for (const s of shapes) {
+      const st = s.stroke ? ` stroke="${s.stroke}" stroke-width="${n1(s.lw)}" stroke-linejoin="round"` : '';
+      if (s.t === 'p') {
+        let d = `M${n1(s.pts[0])} ${n1(s.pts[1])}`;
+        for (let i = 2; i < s.pts.length; i += 2) d += `L${n1(s.pts[i])} ${n1(s.pts[i + 1])}`;
+        body += `<path d="${d}Z" fill="${s.fill}"${st}/>`;
+      } else if (s.t === 'c') {
+        body += `<circle cx="${n1(s.x)}" cy="${n1(s.y)}" r="${n1(Math.max(0, s.r))}" fill="${s.fill}"${st}/>`;
+      } else {
+        body += `<text transform="translate(${n1(s.x)} ${n1(s.y)}) rotate(${(s.rot * 180 / Math.PI).toFixed(2)}) scale(${s.sc.toFixed(3)})" ` +
+                `font-family="'${f.family}', Georgia, serif" font-weight="${f.weight}" font-size="${n1(s.size)}" text-anchor="middle" fill="${s.fill}">${esc(s.ch)}</text>`;
+      }
+    }
+    body += '</g>';
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<!-- Letters are live text. Install the font "${f.family}" or keep the @import below for it to render. -->\n` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<style>@import url('https://fonts.googleapis.com/css2?family=${encodeURIComponent(f.family).replace(/%20/g, '+')}:wght@${f.weight}');</style>` +
+    `<rect width="${W}" height="${H}" fill="${pal.bg}"/>${body}</svg>`;
+}
+
+/* =========================================================
+   13. UI WIRING
+   ========================================================= */
+function applyPalette(i) {
+  state.pal = PALETTES[i];
+  const r = document.documentElement.style;
+  r.setProperty('--bg', state.pal.bg); r.setProperty('--ink', state.pal.ink); r.setProperty('--accent', state.pal.accent);
+  [...$('swatches').children].forEach((b, k) => b.setAttribute('aria-pressed', k === i ? 'true' : 'false'));
+}
+PALETTES.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.className = 'sw'; b.type = 'button'; b.title = p.name; b.setAttribute('aria-label', 'Palette ' + p.name);
+  b.style.background = p.bg; b.style.setProperty('--a', p.accent);
+  b.addEventListener('click', () => { applyPalette(i); focusField(); });
+  $('swatches').appendChild(b);
+});
+FONTS.forEach((f, i) => { const o = document.createElement('option'); o.value = i; o.textContent = f.label; $('font').appendChild(o); });
+$('font').addEventListener('change', e => {
+  state.fontIdx = +e.target.value; metricCache = new Map(); loadFont(); relayout(); focusField();
+});
+$('styleBtn').addEventListener('click', () => {
+  state.style = state.style === 'ink' ? 'filled' : 'ink';
+  $('styleBtn').textContent = 'Style: ' + state.style; focusField();
+});
+$('sym').addEventListener('change', e => { state.sym = e.target.value; relayout(); focusField(); });
+$('ptrMode').addEventListener('change', e => { state.pointer = e.target.value; focusField(); });
+$('calm').addEventListener('input', e => { state.calm = +e.target.value; });
+$('clear').addEventListener('click', () => { clearAll(performance.now() / 1000); focusField(); });
+$('png').addEventListener('click', () => { draw(); canvas.toBlob(b => download(b, 'ornament-type.png')); });
+$('svg').addEventListener('click', () => download(new Blob([toSVG()], { type: 'image/svg+xml' }), 'ornament-type.svg'));
+$('hint').textContent = coarse
+  ? 'tap to type · space finishes the word · delete removes'
+  : 'type to grow · space finishes the word · backspace removes · enter clears';
+
+function loadFont() {
+  const f = curFont();
+  if (!document.fonts || !document.fonts.load) return;
+  document.fonts.load(`${f.weight} 100px "${f.family}"`).then(() => { metricCache = new Map(); relayout(); }).catch(() => {});
+}
+if (document.fonts) document.fonts.addEventListener('loadingdone', () => { metricCache = new Map(); relayout(); });
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight; uiH = bar.offsetHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  relayout();
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   14. START
+   ========================================================= */
+function frame(ts) {
+  const now = ts / 1000, dt = Math.min(0.05, Math.max(0.001, now - (last || now - 0.016)));
+  last = now;
+  update(now, dt); draw();
+  requestAnimationFrame(frame);
+}
+applyPalette(0); loadFont(); resize(); focusField();
+// Small test hook so automated checks can type without a keyboard
+window.__ornamentType = { type: s => { field.value = s; syncFromField(); }, state, clear: () => clearAll(performance.now() / 1000) };
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

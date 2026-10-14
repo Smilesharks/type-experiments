@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Shape Type</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#ffffff; --ink:#1b1b1b; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family:"DM Mono", ui-monospace, Menlo, monospace; font-size:12px; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+  #field { position:fixed; left:0; top:0; width:1px; height:1px; opacity:0; border:0; padding:0;
+    font-size:16px; /* 16px avoids the iOS zoom on focus */ pointer-events:none; }
+  .bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:10px; pointer-events:none; }
+  .bar > * { pointer-events:auto; }
+  .hint { opacity:.55; letter-spacing:.02em; }
+  .controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+  .swatches { display:flex; gap:6px; }
+  .sw { width:22px; height:22px; border-radius:50%; border:1px solid color-mix(in srgb, var(--ink) 40%, transparent);
+    padding:0; cursor:pointer; }
+  .sw[aria-pressed="true"] { outline:2px solid var(--ink); outline-offset:2px; }
+  button, select { font:inherit; color:var(--ink); background:transparent; cursor:pointer;
+    border:1px solid color-mix(in srgb, var(--ink) 40%, transparent); border-radius:999px; padding:5px 12px; }
+  select option { color:#111; background:#fff; }
+  button:hover, select:hover { border-color:var(--ink); }
+  button:focus-visible, select:focus-visible, input[type=range]:focus-visible, .sw:focus-visible {
+    outline:2px solid var(--ink); outline-offset:2px; }
+  label { display:inline-flex; align-items:center; gap:6px; opacity:.9; }
+  input[type=range] { accent-color:var(--ink); width:90px; }
+  @media (max-width:640px) { .hint { font-size:11px; } .controls { gap:6px 8px; } }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Shape type canvas"></canvas>
+<input id="field" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="40" aria-label="Type here">
+
+<div class="bar" id="bar">
+  <div class="hint" id="hint"></div>
+  <div class="controls">
+    <div class="swatches" id="swatches" role="group" aria-label="Palette"></div>
+    <label>Motion
+      <select id="motion">
+        <option value="slide">slide</option>
+        <option value="spin">spin</option>
+        <option value="drop">drop</option>
+      </select>
+    </label>
+    <button id="styleBtn" type="button">Style: color</button>
+    <label>Symmetry
+      <select id="sym">
+        <option value="off">off</option>
+        <option value="mirrorH">mirror horizontal</option>
+        <option value="mirrorV">mirror vertical</option>
+        <option value="kal4">kaleidoscope 4</option>
+        <option value="kal6">kaleidoscope 6</option>
+      </select>
+    </label>
+    <label>Pointer
+      <select id="ptrMode">
+        <option value="twist">twist</option>
+        <option value="off">off</option>
+      </select>
+    </label>
+    <label>Speed <input id="speed" type="range" min="0.4" max="2" step="0.01" value="1"></label>
+    <button id="png" type="button">PNG</button>
+    <button id="svg" type="button">SVG</button>
+    <button id="clear" type="button">Clear</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* =========================================================
+   1. CONFIG
+   ========================================================= */
+const PALETTES = [
+  { name:'Violet',  bg:'#ffffff', ink:'#241466', colors:['#3a1c9c','#5878f2','#ff3d9a','#7b24b8','#66d0f5'] },
+  { name:'Primary', bg:'#fbd423', ink:'#1d2a73', colors:['#2e3f9f','#3a88cf','#ee4455','#ffffff','#f6a623'] },
+  { name:'Slate',   bg:'#25272a', ink:'#ffffff', colors:['#ffffff','#a2b3cb','#f26b4a','#3c8e97','#efb749'] },
+  { name:'Candy',   bg:'#fff1f4', ink:'#3a1030', colors:['#ff4d8d','#ffb703','#5a67d8','#2ec4b6','#9b5de5'] },
+  { name:'Forest',  bg:'#123524', ink:'#fff3d6', colors:['#f4d35e','#ee964b','#7fb069','#fff3d6','#f95738'] },
+  { name:'Ocean',   bg:'#07202b', ink:'#e6f7ff', colors:['#00b4d8','#90e0ef','#f72585','#ffd166','#ffffff'] },
+  { name:'Kraft',   bg:'#d8c3a5', ink:'#2b2118', colors:['#2b2118','#a4492f','#fff4de','#2f5d62','#d98e04'] },
+  { name:'Mono',    bg:'#111111', ink:'#ffffff', colors:['#ffffff','#c8c8c8','#8a8a8a','#e4e4e4','#a6a6a6'] },
+];
+const MAX_LETTERS = 40;
+const MIN_FS = 22;      // cap height in px
+const LINE_H = 1.55;    // line height in cap heights, leaves room for the border under each word
+const GAP = 0.16;       // space between letters (em = cap height)
+const POINTER_R = 150;
+const DUR = 0.5;        // seconds one piece takes to arrive
+
+/* =========================================================
+   2. MATH HELPERS
+   ========================================================= */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const easeOutBack = t => { const c1 = 1.2, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const easeOutBounce = t => {
+  const n = 7.5625, d = 2.75;
+  if (t < 1 / d) return n * t * t;
+  if (t < 2 / d) { t -= 1.5 / d; return n * t * t + 0.75; }
+  if (t < 2.5 / d) { t -= 2.25 / d; return n * t * t + 0.9375; }
+  t -= 2.625 / d; return n * t * t + 0.984375;
+};
+function hash(str) { // FNV-1a
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function rng(seed) { // mulberry32
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* =========================================================
+   3. ALPHABET: every letter is a few simple shapes.
+   Unit box: x from 0 to the letter width, y from 0 (top) to 1 (baseline).
+   Colour is a role (0, 1, 2) that maps to the palette per letter.
+   ========================================================= */
+const arc = (cx, cy, r, a0, a1, n) => {
+  const out = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; out.push(cx + Math.cos(a) * r, cy + Math.sin(a) * r); }
+  return out;
+};
+const PI = Math.PI;
+// shape constructors, each returns { pts: flat polygon, c: colour role }
+const R  = (x, y, w, h, c) => ({ pts: [x, y, x + w, y, x + w, y + h, x, y + h], c });
+const Ci = (cx, cy, r, c) => ({ pts: arc(cx, cy, r, 0, 2 * PI, 40).slice(0, -2), c });
+// half disc: `side` is the direction the curved side bulges toward
+const Hd = (cx, cy, r, side, c) => {
+  const a0 = { b: 0, t: PI, r: -PI / 2, l: PI / 2 }[side];
+  return { pts: arc(cx, cy, r, a0, a0 + PI, 24), c };
+};
+// quarter disc with its right-angle corner at (x, y), extending toward `quad`
+const Qd = (x, y, r, quad, c) => {
+  const a0 = { br: 0, bl: PI / 2, tl: PI, tr: 1.5 * PI }[quad];
+  return { pts: [x, y, ...arc(x, y, r, a0, a0 + PI / 2, 16)], c };
+};
+const Tr = (x1, y1, x2, y2, x3, y3, c) => ({ pts: [x1, y1, x2, y2, x3, y3], c });
+const Pg = (pts, c) => ({ pts, c });
+
+const ALPHA = {};
+const def = (ch, w, parts) => { ALPHA[ch] = { w, parts }; };
+def('A', 1,    [Tr(0, 1, .5, 0, 1, 1, 0), Tr(.34, 1, .5, .6, .66, 1, 2)]);
+def('B', .72,  [R(0, 0, .36, 1, 0), Hd(.36, .25, .25, 'r', 1), Hd(.36, .75, .25, 'r', 2), Hd(.36, .25, .12, 'r', 2)]);
+def('C', .92,  [Hd(.5, .5, .5, 'l', 1), R(.5, 0, .42, .28, 0), R(.5, .72, .42, .28, 0)]);
+def('D', .92,  [R(0, 0, .42, 1, 0), Hd(.42, .5, .5, 'r', 1)]);
+def('E', .8,   [R(0, 0, .28, 1, 0), R(.28, 0, .52, .26, 1), R(.28, .37, .38, .26, 1), R(.28, .74, .52, .26, 1)]);
+def('F', .8,   [R(0, 0, .28, 1, 0), R(.28, 0, .52, .26, 1), R(.28, .37, .38, .26, 2)]);
+def('G', 1,    [Hd(.5, .5, .5, 'l', 0), R(.5, 0, .5, .28, 1), R(.5, .72, .5, .28, 1), R(.62, .46, .38, .26, 2)]);
+def('H', .9,   [R(0, 0, .28, 1, 0), R(.62, 0, .28, 1, 0), R(.28, .37, .34, .26, 2)]);
+def('I', .3,   [R(0, 0, .3, 1, 0)]);
+def('J', .8,   [R(.5, 0, .3, .6, 0), Hd(.4, .6, .4, 'b', 1)]);
+def('K', 1,    [R(0, 0, .28, 1, 0), Tr(.28, .5, .28, 0, 1, 0, 1), Tr(.28, .5, 1, 1, .28, 1, 2)]);
+def('L', .8,   [R(0, 0, .3, 1, 0), R(.3, .72, .5, .28, 1)]);
+def('M', 1.1,  [R(0, 0, .25, 1, 0), R(.85, 0, .25, 1, 0), Tr(.25, 0, .55, .66, .85, 0, 1), Tr(.25, 1, .25, .55, .42, 1, 2), Tr(.85, 1, .85, .55, .68, 1, 2)]);
+def('N', 1,    [R(0, 0, .25, 1, 0), R(.75, 0, .25, 1, 0), Tr(.25, 0, .75, 0, .75, 1, 1), Tr(.25, 0, .75, 1, .25, 1, 2)]);
+def('O', 1,    [Ci(.5, .5, .5, 0), Ci(.5, .5, .2, 2)]);
+def('P', .7,   [R(0, 0, .3, 1, 0), Hd(.3, .35, .35, 'r', 1), Ci(.3, .35, .12, 2)]);
+def('Q', 1,    [Ci(.5, .5, .5, 0), Ci(.5, .5, .2, 1), Tr(.58, .58, 1, 1, .58, 1, 2)]);
+def('R', .8,   [R(0, 0, .3, 1, 0), Hd(.3, .3, .3, 'r', 1), Tr(.3, .6, .8, 1, .3, 1, 2)]);
+def('S', .8,   [R(.4, 0, .4, .3, 1), Hd(.4, .3, .3, 'l', 0), Hd(.4, .7, .3, 'r', 0), R(0, .7, .4, .3, 1)]);
+def('T', 1,    [R(0, 0, 1, .27, 0), R(.36, .27, .28, .73, 1)]);
+def('U', 1,    [R(0, 0, .3, .5, 0), R(.7, 0, .3, .5, 0), Hd(.5, .5, .5, 'b', 1)]);
+def('V', 1,    [Tr(0, 0, 1, 0, .5, 1, 0), Tr(.3, 0, .7, 0, .5, .42, 2)]);
+def('W', 1.2,  [Tr(0, 0, .6, 0, .3, 1, 0), Tr(.6, 0, 1.2, 0, .9, 1, 1), Tr(.3, 1, .6, .42, .9, 1, 2)]);
+def('X', 1,    [Tr(0, 0, 1, 0, .5, .5, 0), Tr(0, 1, 1, 1, .5, .5, 1), Tr(0, 0, .5, .5, 0, 1, 2), Tr(1, 0, .5, .5, 1, 1, 2)]);
+def('Y', 1,    [Tr(0, 0, 1, 0, .5, .5, 0), R(.36, .5, .28, .5, 1)]);
+def('Z', 1,    [R(0, 0, 1, .27, 0), R(0, .73, 1, .27, 0), Pg([.58, .27, 1, .27, .42, .73, 0, .73], 1)]);
+// digits: simple block segments, horizontal bars in role 0 and vertical bars in role 1
+(() => {
+  const t = .22, w = .8;
+  // vertical bars are drawn first and run the full half height, horizontal bars sit on top of them
+  const seg = {
+    ul: R(0, 0, t, .5 + t / 2, 1), ur: R(w - t, 0, t, .5 + t / 2, 1), ll: R(0, .5 - t / 2, t, .5 + t / 2, 1), lr: R(w - t, .5 - t / 2, t, .5 + t / 2, 1),
+    top: R(0, 0, w, t, 0), mid: R(0, .5 - t / 2, w, t, 2), bot: R(0, 1 - t, w, t, 0),
+  };
+  const ORDER = ['ul', 'ur', 'll', 'lr', 'top', 'mid', 'bot'];
+  const D = { 0: 'top bot ul ur ll lr', 1: 'ur lr', 2: 'top ur mid ll bot', 3: 'top ur mid lr bot', 4: 'ul ur mid lr',
+    5: 'top ul mid lr bot', 6: 'top ul mid ll lr bot', 7: 'top ur lr', 8: 'top mid bot ul ur ll lr', 9: 'top ul ur mid lr bot' };
+  for (const d in D) def(d, w, ORDER.filter(k => D[d].split(' ').includes(k)).map(k => seg[k]));
+  // the 1 gets a full-height bar so it reads as a one
+  def('1', w, [R(.54, 0, t, 1, 1), Tr(.2, .3, .54, 0, .54, .3, 0)]);
+})();
+def('.', .3, [Ci(.15, .85, .15, 2)]);
+def('!', .28, [R(0, 0, .28, .66, 0), Ci(.14, .86, .14, 2)]);
+def('?', .7,  [Hd(.35, .33, .33, 't', 0), R(.35, .33, .33, .3, 0), Ci(.5, .86, .14, 2)]);
+def('-', .6,  [R(0, .4, .6, .2, 0)]);
+const FALLBACK = { w: .6, parts: [Ci(.3, .5, .28, 1)] };
+function glyphFor(ch) {
+  if (ALPHA[ch]) return ALPHA[ch];
+  const base = ch.normalize('NFD')[0].toUpperCase(); // accents drop to the base letter
+  return ALPHA[base] || FALLBACK;
+}
+const adv = ch => (ch === ' ' ? 0.55 : glyphFor(ch).w + GAP);
+
+/* =========================================================
+   4. STATE
+   ========================================================= */
+const $ = id => document.getElementById(id);
+const canvas = $('c'), ctx = canvas.getContext('2d');
+const off = document.createElement('canvas'), octx = off.getContext('2d'); // used for symmetry copies
+const field = $('field'), bar = $('bar');
+let W = 0, H = 0, DPR = 1, uiH = 0;
+const state = { pal: PALETTES[0], style: 'color', motion: 'slide', sym: 'off', pointer: 'twist', speed: 1 };
+let letters = [], dying = [], text = '';
+let fsT = 120, fsC = 120, nextId = 1;
+const ptr = { x: -9999, y: -9999, active: false };
+const coarse = matchMedia('(pointer:coarse)').matches;
+
+/* =========================================================
+   5. LAYOUT (fs is the cap height in px)
+   ========================================================= */
+function layoutBox() {
+  const Hh = H - uiH, cy0 = Hh / 2, m = Math.min(W, Hh);
+  switch (state.sym) {
+    case 'mirrorH': return { cx: W * 0.26, cy: cy0, w: W * 0.4, h: Hh * 0.6 };
+    case 'mirrorV': return { cx: W / 2, cy: cy0 - Hh * 0.2, w: W * 0.72, h: Hh * 0.3 };
+    case 'kal4': case 'kal6': return { cx: W / 2, cy: cy0 - m * 0.27, w: m * 0.5, h: m * 0.26 };
+    default: return { cx: W / 2, cy: cy0, w: W * 0.78, h: Hh * 0.6 };
+  }
+}
+function breakLines(fs, boxW) {
+  const lines = [{ items: [], w: 0 }];
+  let i = 0;
+  while (i < letters.length) {
+    const L = letters[i];
+    let cur = lines[lines.length - 1];
+    if (L.ch === ' ') { cur.items.push(L); cur.w += adv(' ') * fs; i++; continue; }
+    let j = i, ww = 0;
+    while (j < letters.length && letters[j].ch !== ' ') { ww += adv(letters[j].ch) * fs; j++; }
+    if (cur.items.some(l => l.ch !== ' ') && cur.w + ww > boxW) { cur = { items: [], w: 0 }; lines.push(cur); }
+    for (let k = i; k < j; k++) cur.items.push(letters[k]);
+    cur.w += ww; i = j;
+  }
+  for (const ln of lines) { // width without trailing spaces and the last gap, used for centering
+    let w = ln.w, k = ln.items.length - 1;
+    while (k >= 0 && ln.items[k].ch === ' ') { w -= adv(' ') * fs; k--; }
+    if (k >= 0) w -= GAP * fs;
+    ln.cw = Math.max(0, w);
+  }
+  return lines;
+}
+function fits(fs, box) {
+  const lines = breakLines(fs, box.w);
+  return Math.max(...lines.map(l => l.cw)) <= box.w && lines.length * LINE_H * fs <= box.h;
+}
+function relayout() {
+  if (!letters.length) return;
+  const box = layoutBox();
+  const maxFs = Math.min((H - uiH) * 0.3, W * 0.2);
+  let lo = MIN_FS, hi = Math.max(MIN_FS, maxFs);
+  if (fits(hi, box)) lo = hi;
+  else for (let i = 0; i < 14; i++) { const mid = (lo + hi) / 2; if (fits(mid, box)) lo = mid; else hi = mid; }
+  fsT = lo;
+  const lines = breakLines(lo, box.w), lh = LINE_H * lo, top = box.cy - lines.length * lh / 2;
+  lines.forEach((ln, li) => {
+    let x = box.cx - ln.cw / 2;
+    const base = top + (li + 0.5) * lh + 0.5 * lo; // baseline: cap height sits above it
+    for (const L of ln.items) {
+      const g = glyphFor(L.ch), a = adv(L.ch) * lo;
+      L.tx = x + (L.ch === ' ' ? a / 2 : g.w * lo / 2); L.ty = base; x += a;
+    }
+  });
+}
+
+/* =========================================================
+   6. PIECES: each shape of a letter arrives on its own
+   ========================================================= */
+function makePiece(pts, role, ox, oy, r, delay) {
+  // pts are in unit-box coords, already shifted so the letter is centred on x and sits on y = 0
+  let cx = 0, cy = 0; const n = pts.length / 2;
+  for (let i = 0; i < pts.length; i += 2) { cx += pts[i]; cy += pts[i + 1]; }
+  cx /= n; cy /= n;
+  const axis = Math.floor(r() * 4), d = 1.1 + r() * 0.5; // slide in from left, right, top or bottom
+  return { pts, role, cx, cy, delay, rdelay: r() * 0.08,
+    off: [[-d, 0], [d, 0], [0, -d], [0, d]][axis], dir: r() < 0.5 ? -1 : 1 };
+}
+function buildPieces(L, prefix) {
+  L.pieces = [];
+  const r = rng(hash(prefix) ^ 0x2f6b9c11);
+  L.shift = Math.floor(r() * 5); // rotates which palette colours this letter uses
+  if (L.ch === ' ') return;
+  const g = glyphFor(L.ch);
+  g.parts.forEach((p, i) => {
+    const pts = p.pts.slice();
+    for (let k = 0; k < pts.length; k += 2) { pts[k] -= g.w / 2; pts[k + 1] -= 1; }
+    L.pieces.push(makePiece(pts, p.c, 0, 0, r, i * 0.06 + r() * 0.04));
+  });
+}
+// a row of small shapes under a finished word
+function buildBorder(L, word, now) {
+  const Wem = word.reduce((s, l) => s + adv(l.ch), 0) - GAP;
+  if (Wem <= 0.1) return;
+  const r = rng(hash(word.map(l => l.ch).join('')) ^ 0x6d2b79f5);
+  const step = 0.22, n = Math.max(1, Math.round(Wem / step)), s = Wem / n;
+  const x0 = -adv(' ') / 2 - Wem; // word start relative to the space centre
+  for (let i = 0; i < n; i++) {
+    const cx = x0 + (i + 0.5) * s, cy = 0.24, h = 0.075, kind = i % 4;
+    let pts;
+    if (kind === 0) pts = Tr(cx - h, cy + h, cx, cy - h, cx + h, cy + h, 0).pts;
+    else if (kind === 1) pts = Ci(cx, cy, h, 1).pts;
+    else if (kind === 2) pts = Hd(cx, cy - h * 0.4, h, 'b', 2).pts;
+    else pts = R(cx - h, cy - h, 2 * h, 2 * h, 1).pts;
+    L.pieces.push(makePiece(pts, kind === 0 ? 0 : kind === 1 ? 1 : 2, 0, 0, r, 0.1 + i * 0.045));
+  }
+}
+function addLetter(ch, now) {
+  if (letters.length >= MAX_LETTERS) return;
+  let ws = letters.length;
+  while (ws > 0 && letters[ws - 1].ch !== ' ') ws--;
+  const word = letters.slice(ws);
+  const L = { id: nextId++, ch, x: 0, y: 0, vx: 0, vy: 0, tx: 0, ty: 0, scale: 0.85, sv: 0,
+    rot: (Math.random() - 0.5) * 0.2, rv: 0, pieces: [], born: now, dead: 0, shift: 0 };
+  letters.push(L);
+  buildPieces(L, word.map(l => l.ch).join('') + ch);
+  if (ch === ' ' && word.length) buildBorder(L, word, now);
+  relayout();
+  L.x = L.tx; L.y = L.ty;
+  for (let k = 1; k <= 3; k++) { // small kick so the line wobbles when a letter lands
+    const N = letters[letters.length - 1 - k]; if (!N) break;
+    N.vy -= (140 / k) * (fsT / 200); N.rv += (Math.random() - 0.5) * 1.0 / k;
+  }
+}
+function removeLast(now) {
+  const L = letters.pop(); if (!L) return;
+  L.dead = now; dying.push(L); relayout();
+}
+function clearAll(now) {
+  while (letters.length) { const L = letters.pop(); L.dead = now; dying.push(L); }
+  text = ''; field.value = '';
+}
+function stepLetter(L, h, now) {
+  const dead = !!L.dead, k = 170, d = 2 * Math.sqrt(k) * 0.45;
+  L.vx += ((L.tx - L.x) * k - L.vx * d) * h; L.x += L.vx * h;
+  L.vy += ((L.ty - L.y) * k - L.vy * d) * h; L.y += L.vy * h;
+  const ks = 200, ds = 2 * Math.sqrt(ks) * 0.5;
+  L.sv += (((dead ? 0.9 : 1) - L.scale) * ks - L.sv * ds) * h; L.scale += L.sv * h;
+  const kr = 120, dr = 2 * Math.sqrt(kr) * 0.4;
+  L.rv += (((dead ? 0 : 0.008 * Math.sin(now * 0.8 + L.id)) - L.rot) * kr - L.rv * dr) * h; L.rot += L.rv * h;
+}
+
+/* =========================================================
+   7. SYMMETRY COPIES
+   ========================================================= */
+function copies() {
+  const cy0 = (H - uiH) / 2, cx0 = W / 2;
+  switch (state.sym) {
+    case 'mirrorH': return [[1, 0, 0, 1, 0, 0], [-1, 0, 0, 1, W, 0]];
+    case 'mirrorV': return [[1, 0, 0, 1, 0, 0], [1, 0, 0, -1, 0, 2 * cy0]];
+    case 'kal4': case 'kal6': {
+      const N = state.sym === 'kal4' ? 4 : 6, out = [];
+      for (let k = 0; k < N; k++) {
+        const a = 2 * Math.PI * k / N, c = Math.cos(a), s = Math.sin(a);
+        out.push([c, s, -s, c, cx0 - c * cx0 + s * cy0, cy0 - s * cx0 - c * cy0]);
+      }
+      return out;
+    }
+    default: return [[1, 0, 0, 1, 0, 0]];
+  }
+}
+function invert(M, x, y) {
+  const [a, b, c, d, e, f] = M, det = a * d - b * c;
+  return { x: (d * (x - e) - c * (y - f)) / det, y: (-b * (x - e) + a * (y - f)) / det };
+}
+
+/* =========================================================
+   8. SCENE: transformed polygons for this frame
+   ========================================================= */
+let scene = [];
+function colorFor(L, role) {
+  const pal = state.pal;
+  if (state.style === 'mono') return pal.ink;
+  return pal.colors[(L.shift + role * 2) % pal.colors.length];
+}
+function buildPiece(Pc, L, now, ptrs, speed) {
+  let e;
+  if (L.dead) e = 1 - clamp(((now - L.dead) * speed - Pc.rdelay) / 0.25, 0, 1);
+  else {
+    const tt = ((now - L.born) * speed - Pc.delay) / DUR;
+    e = tt <= 0 ? 0 : state.motion === 'drop' ? easeOutBounce(Math.min(tt, 1)) : easeOutBack(Math.min(tt, 1));
+  }
+  if (e <= 0.003) return;
+  let s = 1, ang = 0, dx = 0, dy = 0;
+  if (state.motion === 'slide') { s = clamp(e * 2.5, 0, 1); dx = (1 - e) * Pc.off[0]; dy = (1 - e) * Pc.off[1]; }
+  else if (state.motion === 'spin') { s = clamp(e, 0, 1.15); ang = (1 - e) * Pc.dir * Math.PI; }
+  else { dy = -(1 - e) * 2.2; }
+  const sc = fsC * Math.max(L.scale, 0), cr = Math.cos(L.rot), sr = Math.sin(L.rot);
+  if (ptrs.length && state.pointer === 'twist') { // tiles near the pointer turn like a revolving door
+    const wx = Pc.cx * sc, wy = Pc.cy * sc, sx = L.x + wx * cr - wy * sr, sy = L.y + wx * sr + wy * cr;
+    let fall = 0;
+    for (const q of ptrs) fall = Math.max(fall, 1 - smoothstep(0, POINTER_R, Math.hypot(sx - q.x, sy - q.y)));
+    ang += fall * Pc.dir * Math.PI / 2; s *= 1 - 0.3 * fall;
+  }
+  const ca = Math.cos(ang), sa = Math.sin(ang), n = Pc.pts.length, out = new Array(n);
+  for (let i = 0; i < n; i += 2) {
+    const px = (Pc.pts[i] - Pc.cx) * s, py = (Pc.pts[i + 1] - Pc.cy) * s;
+    const lx = (Pc.cx + px * ca - py * sa + dx) * sc, ly = (Pc.cy + px * sa + py * ca + dy) * sc;
+    out[i] = L.x + lx * cr - ly * sr; out[i + 1] = L.y + lx * sr + ly * cr;
+  }
+  scene.push({ pts: out, fill: colorFor(L, Pc.role) });
+}
+function buildScene(now) {
+  scene = [];
+  const ms = copies();
+  const ptrs = ptr.active ? ms.map(M => invert(M, ptr.x, ptr.y)) : [];
+  for (const L of dying) for (const Pc of L.pieces) buildPiece(Pc, L, now, ptrs, state.speed);
+  for (const L of letters) for (const Pc of L.pieces) buildPiece(Pc, L, now, ptrs, state.speed);
+  return ms;
+}
+
+/* =========================================================
+   9. UPDATE AND DRAW
+   ========================================================= */
+let last = 0;
+function update(now, dt) {
+  fsC += (fsT - fsC) * (1 - Math.exp(-10 * dt));
+  const steps = clamp(Math.ceil(dt * 90), 1, 4), h = dt / steps;
+  for (let s = 0; s < steps; s++) { for (const L of letters) stepLetter(L, h, now); for (const L of dying) stepLetter(L, h, now); }
+  dying = dying.filter(L => (now - L.dead) * state.speed < 0.45);
+}
+function paintScene(c) {
+  c.lineWidth = 0.7; c.lineJoin = 'round';
+  for (const s of scene) {
+    const p = s.pts;
+    c.fillStyle = s.fill; c.strokeStyle = s.fill; // same-colour stroke hides hairline seams
+    c.beginPath(); c.moveTo(p[0], p[1]);
+    for (let i = 2; i < p.length; i += 2) c.lineTo(p[i], p[i + 1]);
+    c.closePath(); c.fill(); c.stroke();
+  }
+}
+function draw(now) {
+  const ms = buildScene(now);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = state.pal.bg; ctx.fillRect(0, 0, W, H);
+  if (ms.length === 1) paintScene(ctx);
+  else { // paint once to an offscreen canvas, then stamp it for every symmetry copy
+    octx.setTransform(1, 0, 0, 1, 0, 0); octx.clearRect(0, 0, off.width, off.height);
+    octx.setTransform(DPR, 0, 0, DPR, 0, 0); paintScene(octx);
+    for (const M of ms) { ctx.save(); ctx.transform(...M); ctx.drawImage(off, 0, 0, W, H); ctx.restore(); }
+  }
+  if (!letters.length && !dying.length) {
+    ctx.save(); ctx.globalAlpha = 0.45; ctx.fillStyle = state.pal.ink; ctx.textAlign = 'center';
+    ctx.font = '14px "DM Mono", monospace';
+    ctx.fillText(coarse ? 'tap and type something' : 'type something', W / 2, (H - uiH) / 2);
+    ctx.restore();
+  }
+}
+
+/* =========================================================
+   10. INPUT
+   ========================================================= */
+let composing = false;
+function syncFromField() {
+  const now = performance.now() / 1000;
+  const v = field.value.replace(/[\r\n]+/g, ' ').slice(0, MAX_LETTERS);
+  let p = 0; // keep the common prefix, then edit the end
+  while (p < text.length && p < v.length && text[p] === v[p]) p++;
+  for (let i = text.length; i > p; i--) removeLast(now);
+  for (const ch of v.slice(p)) addLetter(ch, now);
+  text = v;
+}
+field.addEventListener('compositionstart', () => { composing = true; });
+field.addEventListener('compositionend', () => { composing = false; syncFromField(); });
+field.addEventListener('input', () => { if (!composing) syncFromField(); });
+field.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); clearAll(performance.now() / 1000); }
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) e.preventDefault();
+});
+const focusField = () => field.focus({ preventScroll: true });
+canvas.addEventListener('pointerdown', e => { ptr.active = true; ptr.x = e.clientX; ptr.y = e.clientY; focusField(); });
+canvas.addEventListener('pointermove', e => { ptr.active = true; ptr.x = e.clientX; ptr.y = e.clientY; });
+canvas.addEventListener('pointerup', e => { if (e.pointerType !== 'mouse') ptr.active = false; });
+canvas.addEventListener('pointerleave', () => { ptr.active = false; });
+canvas.addEventListener('pointercancel', () => { ptr.active = false; });
+
+/* =========================================================
+   11. EXPORT
+   ========================================================= */
+function download(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function toSVG() {
+  const ms = buildScene(performance.now() / 1000), f1 = v => (+v).toFixed(1);
+  let body = '';
+  for (const M of ms) {
+    body += `<g transform="matrix(${M.map(v => +v.toFixed(4)).join(' ')})">`;
+    for (const s of scene) {
+      const pts = [];
+      for (let i = 0; i < s.pts.length; i += 2) pts.push(f1(s.pts[i]) + ',' + f1(s.pts[i + 1]));
+      body += `<polygon points="${pts.join(' ')}" fill="${s.fill}"/>`;
+    }
+    body += '</g>';
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<rect width="${W}" height="${H}" fill="${state.pal.bg}"/>${body}</svg>`;
+}
+
+/* =========================================================
+   12. UI
+   ========================================================= */
+function applyPalette(i) {
+  state.pal = PALETTES[i];
+  const r = document.documentElement.style;
+  r.setProperty('--bg', state.pal.bg); r.setProperty('--ink', state.pal.ink);
+  [...$('swatches').children].forEach((b, k) => b.setAttribute('aria-pressed', k === i ? 'true' : 'false'));
+}
+PALETTES.forEach((p, i) => {
+  const b = document.createElement('button');
+  b.className = 'sw'; b.type = 'button'; b.title = p.name; b.setAttribute('aria-label', 'Palette ' + p.name);
+  b.style.background = `linear-gradient(135deg, ${p.colors.slice(0, 3).join(',')})`;
+  b.style.boxShadow = `inset 0 0 0 3px ${p.bg}`;
+  b.addEventListener('click', () => { applyPalette(i); focusField(); });
+  $('swatches').appendChild(b);
+});
+$('motion').addEventListener('change', e => { state.motion = e.target.value; focusField(); });
+$('styleBtn').addEventListener('click', () => {
+  state.style = state.style === 'color' ? 'mono' : 'color';
+  $('styleBtn').textContent = 'Style: ' + state.style; focusField();
+});
+$('sym').addEventListener('change', e => { state.sym = e.target.value; relayout(); focusField(); });
+$('ptrMode').addEventListener('change', e => { state.pointer = e.target.value; focusField(); });
+$('speed').addEventListener('input', e => { state.speed = +e.target.value; });
+$('clear').addEventListener('click', () => { clearAll(performance.now() / 1000); focusField(); });
+$('png').addEventListener('click', () => { draw(performance.now() / 1000); canvas.toBlob(b => download(b, 'shape-type.png')); });
+$('svg').addEventListener('click', () => download(new Blob([toSVG()], { type: 'image/svg+xml' }), 'shape-type.svg'));
+$('hint').textContent = coarse
+  ? 'tap to type · space adds a border · delete removes'
+  : 'type to build · space adds a border · backspace removes · enter clears · move the pointer to twist the tiles';
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight; uiH = bar.offsetHeight;
+  canvas.width = off.width = Math.round(W * DPR); canvas.height = off.height = Math.round(H * DPR);
+  relayout();
+}
+window.addEventListener('resize', resize);
+
+/* =========================================================
+   13. START
+   ========================================================= */
+function frame(ts) {
+  const now = ts / 1000, dt = Math.min(0.05, Math.max(0.001, now - (last || now - 0.016)));
+  last = now;
+  update(now, dt); draw(now);
+  requestAnimationFrame(frame);
+}
+applyPalette(0); resize(); focusField();
+window.__shape = { type: s => { field.value = s; syncFromField(); }, state, stats: () => ({ shapes: scene.length, letters: letters.length }) };
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
