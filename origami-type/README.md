@@ -1,5 +1,7 @@
 # Origami Type
 
+Live: https://type-experiments-cyan.vercel.app/origami-type
+
 Letters built from paper triangles that unfold like folded paper.
 
 ## Run

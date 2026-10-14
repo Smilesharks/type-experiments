@@ -1,5 +1,7 @@
 # Shape Type
 
+Live: https://type-experiments-cyan.vercel.app/shape-type
+
 An original geometric alphabet built in code from simple shapes: rectangles, circles, half discs, quarter discs and triangles. No font file needed (only DM Mono for the interface).
 
 ## Run

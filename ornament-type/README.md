@@ -1,5 +1,7 @@
 # Ornament Type
 
+Live: https://type-experiments-cyan.vercel.app/ornament-type
+
 A typing toy. Every letter grows swashes, curls, tails, dots and diamonds that behave like ropes (springs, wind, gravity, pointer).
 
 ## Run
