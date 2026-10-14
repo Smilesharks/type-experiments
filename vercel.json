@@ -4,6 +4,9 @@
   "buildCommand": null,
   "outputDirectory": ".",
   "rewrites": [
-    { "source": "/", "destination": "/shape-type/index.html" }
+    {
+      "source": "/",
+      "destination": "/shape-type"
+    }
   ]
 }
