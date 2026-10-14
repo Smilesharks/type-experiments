@@ -26,7 +26,7 @@
   .name { font-weight:500; }
   .what { opacity:.55; }
   a.toy:hover .name { color:var(--accent); }
-  footer { margin-top:44px; opacity:.4; }
+  footer { margin-top:44px; opacity:.4; line-height:1.9; }
   footer a { color:inherit; }
   @media (max-width:640px) { main { padding-top:9vh; } h1 { font-size:22px; } }
 </style>
@@ -36,11 +36,14 @@
   <h1>Type experiments</h1>
   <p class="lede">Three interactive typing toys. Each one is a single self-contained <code>index.html</code>, vanilla JS and canvas, no build step. Start typing once a toy opens.</p>
   <ul>
-    <li><a class="toy" href="./ornament-type/"><span class="name">Ornament Type</span> <span class="what">letters grow swashes, curls and tails that behave like ropes</span></a></li>
-    <li><a class="toy" href="./origami-type/"><span class="name">Origami Type</span> <span class="what">letters made of paper triangles that unfold like folded paper</span></a></li>
-    <li><a class="toy" href="./shape-type/"><span class="name">Shape Type</span> <span class="what">an original geometric alphabet built from simple shapes</span></a></li>
+    <li><a class="toy" href="../ornament-type/"><span class="name">Ornament Type</span> <span class="what">letters grow swashes, curls and tails that behave like ropes</span></a></li>
+    <li><a class="toy" href="../origami-type/"><span class="name">Origami Type</span> <span class="what">letters made of paper triangles that unfold like folded paper</span></a></li>
+    <li><a class="toy" href="../shape-type/"><span class="name">Shape Type</span> <span class="what">an original geometric alphabet built from simple shapes</span></a></li>
   </ul>
-  <footer>Source on <a href="https://github.com/Smilesharks/type-experiments">GitHub</a></footer>
+  <footer>
+    <a href="https://www.arielcerda.com/">arielcerda.com</a> &middot; <a href="https://github.com/Smilesharks/type-experiments">GitHub</a><br>
+    Inspired by <a href="https://type-garden.vercel.app/">Type Garden</a> by Akshat Agarwal.
+  </footer>
 </main>
 </body>
 </html>

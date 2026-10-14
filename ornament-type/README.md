@@ -26,3 +26,9 @@ Open `index.html` in a browser. No build step. Google Fonts load from the web.
 - Keep ornaments from overlapping the next line.
 - Per-word color accents, more ornament types (stars, ribbons).
 - Record a looping video of the sway.
+
+## Credits
+
+Inspired by [Type Garden](https://type-garden.vercel.app/) by Akshat Agarwal.
+
+Built by [Ariel Cerda](https://www.arielcerda.com/).

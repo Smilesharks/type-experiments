@@ -28,3 +28,9 @@ Open section 3 and change the shapes. Example: `def('A', 1, [Tr(0, 1, .5, 0, 1, 
 - `Tr(x1, y1, x2, y2, x3, y3, role)` triangle, `Pg([x, y, ...], role)` any polygon
 
 Letters A to Z, digits 0 to 9 and . ! ? - are defined. Accented letters use their base letter. Anything else shows a small circle.
+
+## Credits
+
+Inspired by [Type Garden](https://type-garden.vercel.app/) by Akshat Agarwal.
+
+Built by [Ariel Cerda](https://www.arielcerda.com/).

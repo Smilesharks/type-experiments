@@ -24,3 +24,9 @@ Open `index.html` in a browser. No build step. Google Fonts load from the web.
 ## Notes
 - Folds compound down the hinge chain, so wobble must never touch the geometry (only shading), or the letter deforms.
 - Max 40 characters to keep the frame rate high.
+
+## Credits
+
+Inspired by [Type Garden](https://type-garden.vercel.app/) by Akshat Agarwal.
+
+Built by [Ariel Cerda](https://www.arielcerda.com/).
